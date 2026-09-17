@@ -1,0 +1,11 @@
+name: Keep Mobile Cloud Awake
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping public health endpoint
+        run: curl --fail --retry 2 --max-time 20 https://forex-trading-v1-mobile.onrender.com/health
