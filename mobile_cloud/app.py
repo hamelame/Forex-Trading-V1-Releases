@@ -19,9 +19,24 @@ def ensure_pc_core():
     urllib.request.urlretrieve(RELEASE_URL,z)
     with zipfile.ZipFile(z) as q:q.extractall(CORE)
     z.unlink(missing_ok=True)
-    roots=list(CORE.rglob("forex_app/engine.py"))
-    if not roots: raise RuntimeError("PC v2.8.1 core not found in release")
-    return roots[0].parent.parent
+    # The GitHub release package can itself contain the distributable source ZIP.
+    # Recursively unpack nested ZIPs before locating the PC engine.
+    for _ in range(4):
+        roots=list(CORE.rglob("engine.py"))
+        roots=[p for p in roots if p.parent.name=="forex_app"]
+        if roots:
+            return roots[0].parent.parent
+        nested=list(CORE.rglob("*.zip"))
+        if not nested: break
+        for nz in nested:
+            out=nz.parent/(nz.stem+"_src")
+            out.mkdir(parents=True,exist_ok=True)
+            try:
+                with zipfile.ZipFile(nz) as q:q.extractall(out)
+            except zipfile.BadZipFile:
+                pass
+            nz.unlink(missing_ok=True)
+    raise RuntimeError("PC v2.8.1 core not found after recursive release extraction")
 
 PCROOT=ensure_pc_core()
 sys.path.insert(0,str(PCROOT))
