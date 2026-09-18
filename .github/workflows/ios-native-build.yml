@@ -1,0 +1,18 @@
+name: iOS Native Build Check
+on:
+  push:
+    branches: [native-ios-v1]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+      - name: Build iOS Simulator app
+        run: |
+          xcodebuild -project ios/ForexTradingV1.xcodeproj -scheme ForexTradingV1 -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
