@@ -15,4 +15,16 @@ jobs:
           xcodegen generate
       - name: Build iOS Simulator app
         run: |
-          xcodebuild -project ios/ForexTradingV1.xcodeproj -scheme ForexTradingV1 -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project ios/ForexTradingV1.xcodeproj -scheme ForexTradingV1 -sdk iphonesimulator -configuration Debug -derivedDataPath build/simulator CODE_SIGNING_ALLOWED=NO build
+      - name: Build physical iPhone target (unsigned validation)
+        run: |
+          xcodebuild -project ios/ForexTradingV1.xcodeproj -scheme ForexTradingV1 -sdk iphoneos -configuration Release -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO build
+      - name: Package simulator test artifact
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/simulator/Build/Products/Debug-iphonesimulator/ForexTradingV1.app ForexTradingV1-Simulator.zip
+      - name: Upload simulator test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForexTradingV1-Simulator
+          path: ForexTradingV1-Simulator.zip
+          retention-days: 7
