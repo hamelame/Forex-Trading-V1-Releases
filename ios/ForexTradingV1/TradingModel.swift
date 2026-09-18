@@ -16,6 +16,6 @@ import Foundation
         } catch { self.error="Control failed" }
     }
     func newSession(capital:Double) async { await control("new_session",extras:["capital":capital]) }
-    func setTopN(_ n:Int) async { await control("set_top_n",extras:["top_n":n]) }
+    func setTopN(_ n:Int) async { await control("set_top_n",extras:["value":n]) }
     func selectMarket(_ symbol:String) async { await control("select_market",extras:["symbol":symbol]) }
 }
