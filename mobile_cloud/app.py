@@ -5,7 +5,7 @@ from flask import Flask,jsonify,request,send_from_directory
 
 APP_VERSION="2.9.1"
 PC_VERSION="2.8.1"
-RELEASE_URL="https://github.com/hamelame/Forex-Trading-V1-Releases/releases/download/v2.8.1/Forex_Trading_V1_v2.8.1.zip"
+RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
 BASE=Path(__file__).resolve().parent
 CORE=Path("/tmp/fxai_pc_281")
 TOKEN=os.getenv("MOBILE_ACCESS_TOKEN","")
@@ -108,7 +108,8 @@ def state_payload():
         "positions":positions,"trades":trades,"markets":markets,"decisions":decisions,
         "selection":selection,"top_markets":engine.top_markets(10),
         "exposure":engine.exposure_summary(),"performance":perf,"learning":learning,
-        "shadow":learning.get("neural_edge",{}),
+        "shadow":learning.get("neural_edge",{}) if isinstance(learning.get("neural_edge",{}),dict) else {},
+        "shadow_open":[], "shadow_trades":[],
         "market_health":{"score":round(sum(m["score"] for m in markets[:10])/max(1,len(markets[:10]))),
                          "regime":max((m["regime"] for m in markets[:10]),key=lambda x:sum(1 for y in markets[:10] if y["regime"]==x),default="COLLECTING"),
                          "risk":learning.get("risk_state","NORMAL")},
