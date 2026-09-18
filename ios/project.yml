@@ -1,0 +1,23 @@
+name: ForexTradingV1
+options:
+  bundleIdPrefix: com.forextradingv1
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.forextradingv1.mobile
+    SWIFT_VERSION: "5.0"
+targets:
+  ForexTradingV1:
+    type: application
+    platform: iOS
+    sources:
+      - ForexTradingV1
+    settings:
+      base:
+        INFOPLIST_KEY_CFBundleDisplayName: Forex Trading V1
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+    scheme:
+      testTargets: []
