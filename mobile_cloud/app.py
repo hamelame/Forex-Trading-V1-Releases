@@ -55,7 +55,7 @@ try:
 except Exception:
     feed=SyntheticFeed(cfg["symbols"])
 engine=TradingEngine(cfg,feed,db)
-runtime={"last_scan":0.0,"last_error":"","selected_market":"","started_at":time.time()}
+runtime={"last_scan":0.0,"last_error":"","selected_market":"","started_at":time.time(),"cached_state":None}
 
 app=Flask(__name__,static_folder="web",static_url_path="")
 
@@ -125,6 +125,7 @@ def loop():
             with lock:
                 engine.scan()
                 runtime["last_scan"]=time.time(); runtime["last_error"]=""
+                runtime["cached_state"]=state_payload()
         except Exception as e:
             runtime["last_error"]=f"{type(e).__name__}: {e}"
         time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
@@ -139,7 +140,9 @@ def health():
 @app.get("/api/state")
 def get_state():
     if not auth():return jsonify({"error":"unauthorized"}),401
-    with lock:return jsonify(state_payload())
+    cached=runtime.get("cached_state")
+    if cached is not None:return jsonify(cached)
+    return jsonify({"version":APP_VERSION,"pc_core_version":PC_VERSION,"execution":"PAPER_ONLY","engine":"PC_V2_8_1_SERVER_SIDE","neural_edge":"SHADOW_ONLY","enabled":engine.enabled,"balance":round(engine.balance,2),"equity":round(engine.equity,2),"realized":0,"unrealized":0,"open_positions":0,"max_positions":int(cfg.get("max_open_positions",5)),"positions":[],"trades":[],"markets":[],"decisions":[],"selection":{},"top_markets":[],"exposure":{},"performance":{},"learning":{},"shadow":{},"shadow_open":[],"shadow_trades":[],"market_health":{"score":0,"regime":"COLLECTING","risk":"NORMAL"},"data_quality":{"average":0,"feeds":{},"markets":0},"status":"AI engine is collecting market data","scan_count":engine.scan_count,"last_error":runtime["last_error"],"session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],"safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}})
 
 @app.post("/api/control")
 def control():
