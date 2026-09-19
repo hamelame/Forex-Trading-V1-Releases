@@ -120,7 +120,7 @@ def state_payload():
         "safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}
     }
 
-threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+
 
 @app.get("/health")
 def health():
@@ -179,7 +179,9 @@ def loop():
 
 @app.post("/api/control")
 def control():
-    if not auth():return jsonify({"error":"unauthorized"}),401
+    if not auth():return jsonithreading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+
+fy({"error":"unauthorized"}),401
     data=request.get_json(silent=True) or {}; action=str(data.get("action",""))
     if action not in {"start","pause","close_all","new_session","set_top_n","select_market"}:
         return jsonify({"error":"unsupported action"}),400
