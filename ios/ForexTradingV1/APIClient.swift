@@ -29,7 +29,14 @@ struct APIClient {
                 guard (200..<300).contains(h.statusCode) else {
                     throw APIError.http(h.statusCode)
                 }
-                return try JSONDecoder().decode(T.self, from: data)
+                do {
+                    return try JSONDecoder().decode(T.self, from: data)
+                } catch {
+                    let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+                    print("DECODE_ERROR:", error)
+                    print("DECODE_RESPONSE_PREFIX:", String(raw.prefix(1200)))
+                    throw error
+                }
             } catch APIError.unauthorized {
                 throw APIError.unauthorized
             } catch {
