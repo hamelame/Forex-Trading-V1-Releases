@@ -109,13 +109,13 @@ def state_payload():
         "positions":positions,"trades":trades,"markets":markets,"decisions":decisions,
         "selection":selection,"top_markets":engine.top_markets(10),
         "exposure":engine.exposure_summary(),"performance":perf,"learning":learning,
-        "shadow":learning.get("neural_edge",{}) if isinstance(learning.get("neural_edge",{}),dict) else {},
+        "shadow":{},
         "shadow_open":[], "shadow_trades":[],
         "market_health":{"score":round(sum(m["score"] for m in markets[:10])/max(1,len(markets[:10]))),
                          "regime":max((m["regime"] for m in markets[:10]),key=lambda x:sum(1 for y in markets[:10] if y["regime"]==x),default="COLLECTING"),
                          "risk":learning.get("risk_state","NORMAL")},
         "data_quality":{"average":round(sum(qualities)/max(1,len(qualities)),1),"feeds":feeds,"markets":len(markets)},
-        "status":engine.last_status,"scan_count":engine.scan_count,"last_error":runtime["last_error"],
+        "status":str(engine.last_status) if engine.last_status is not None else None,"scan_count":engine.scan_count,"last_error":runtime["last_error"],
         "session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],
         "safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}
     }
