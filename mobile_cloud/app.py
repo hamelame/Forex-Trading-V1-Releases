@@ -177,7 +177,7 @@ def loop():
             traceback.print_exc()
         time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
 
-threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+
 
 @app.post("/api/control")
 def control():
@@ -190,3 +190,6 @@ fy({"error":"unauthorized"}),401
     control_queue.put((action,data))
     print("CONTROL_QUEUED:",action,flush=True)
     return jsonify({"ok":True,"action":action,"queued":True}),202
+
+
+threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
