@@ -177,9 +177,11 @@ def loop():
             traceback.print_exc()
         time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
 
+threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+
 @app.post("/api/control")
 def control():
-    if not auth():return jsonithreading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+    if not auth():return jsoni
 
 fy({"error":"unauthorized"}),401
     data=request.get_json(silent=True) or {}; action=str(data.get("action",""))
