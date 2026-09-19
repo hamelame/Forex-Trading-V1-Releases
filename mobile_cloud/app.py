@@ -1,4 +1,4 @@
-import os,sys,time,json,threading,urllib.request,zipfile,tempfile,shutil
+import os,sys,time,json,threading,urllib.request,zipfile,tempfile,shutil,traceback
 from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
@@ -128,6 +128,8 @@ def loop():
                 runtime["cached_state"]=state_payload()
         except Exception as e:
             runtime["last_error"]=f"{type(e).__name__}: {e}"
+            print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
+            traceback.print_exc()
         time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
 threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
 
