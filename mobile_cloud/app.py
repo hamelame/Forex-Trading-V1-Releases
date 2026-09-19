@@ -150,7 +150,13 @@ def get_state():
 def control():
     if not auth():return jsonify({"error":"unauthorized"}),401
     data=request.get_json(silent=True) or {}; action=data.get("action","")
-    with lock:
+    # Do not let a mobile request sit behind a long market scan until
+    # Gunicorn kills the worker. Fail fast; the iOS API client retries
+    # transient HTTP failures while the engine keeps its in-process safety.
+    acquired=lock.acquire(timeout=2.0)
+    if not acquired:
+        return jsonify({"error":"engine_busy","retry":True}),503
+    try:
         if action=="start": engine.set_enabled(True,reset_on_start=False)
         elif action=="pause": engine.set_enabled(False,reset_on_start=False)
         elif action=="close_all": engine.close_all_positions("Mobile Close All")
@@ -160,6 +166,8 @@ def control():
             n=5 if int(data.get("value",10))<=5 else 10; cfg["selection_mode"]=f"AUTO TOP {n}"; engine.apply_config(cfg,True)
         elif action=="select_market": runtime["selected_market"]=str(data.get("symbol",""))
         else:return jsonify({"error":"unsupported action"}),400
+    finally:
+        lock.release()
     return jsonify({"ok":True,"action":action})
 
 @app.get("/")
