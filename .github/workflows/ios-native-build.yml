@@ -23,6 +23,49 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
 
+      - name: Generate App Store icon assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICON_DIR="ios/ForexTradingV1/Assets.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICON_DIR"
+          python3 - <<'PY'
+          import struct, zlib
+          w=h=1024
+          rows=[]
+          for y in range(h):
+              row=bytearray([0])
+              for x in range(w):
+                  # Dark navy/blue app icon with a subtle diagonal gradient.
+                  r=8 + (x*10//w)
+                  g=18 + (y*20//h)
+                  b=38 + ((x+y)*38//(w+h))
+                  row += bytes((r,g,b,255))
+              rows.append(bytes(row))
+          raw=b''.join(rows)
+          def chunk(t,d):
+              return struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
+          png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack(">IIBBBBB",w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw,9))+chunk(b'IEND',b'')
+          open("ios/ForexTradingV1/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png","wb").write(png)
+          PY
+          cat > "$ICON_DIR/Contents.json" <<'JSON'
+          {
+            "images" : [
+              {
+                "filename" : "AppIcon-1024.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          JSON
+          mkdir -p "ios/ForexTradingV1/Assets.xcassets"
+          cat > "ios/ForexTradingV1/Assets.xcassets/Contents.json" <<'JSON'
+          { "info" : { "author" : "xcode", "version" : 1 } }
+          JSON
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen
