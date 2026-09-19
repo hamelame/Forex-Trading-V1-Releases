@@ -132,6 +132,7 @@ def health():
 def get_state():
     if not auth():return jsonify({"error":"unauthorized"}),401
     cached=runtime.get("cached_state")
+    print("API_STATE_CACHE:", cached is not None, len(cached.get("markets",[])) if isinstance(cached,dict) else -1, flush=True)
     if cached is not None:return jsonify(cached)
     return jsonify({"version":APP_VERSION,"pc_core_version":PC_VERSION,"execution":"PAPER_ONLY","engine":"PC_V2_8_1_SERVER_SIDE","neural_edge":"SHADOW_ONLY","enabled":engine.enabled,"balance":round(engine.balance,2),"equity":round(engine.equity,2),"realized":0,"unrealized":0,"open_positions":0,"max_positions":int(cfg.get("max_open_positions",5)),"positions":[],"trades":[],"markets":[],"decisions":[],"selection":{},"top_markets":[],"exposure":{},"performance":{},"learning":{},"shadow":{},"shadow_open":[],"shadow_trades":[],"market_health":{"score":0,"regime":"COLLECTING","risk":"NORMAL"},"data_quality":{"average":0,"feeds":{},"markets":0},"status":"AI engine is collecting market data","scan_count":engine.scan_count,"last_error":runtime["last_error"],"session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],"safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}})
 
