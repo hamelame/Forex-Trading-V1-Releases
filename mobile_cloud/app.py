@@ -120,23 +120,6 @@ def state_payload():
         "safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}
     }
 
-def loop():
-    while True:
-        try:
-            drain_controls()
-            scan_started=time.time()
-            print("ENGINE_SCAN_START",engine.scan_count,flush=True)
-            engine.scan()
-            elapsed=time.time()-scan_started
-            runtime["last_scan"]=time.time(); runtime["last_error"]=""
-            runtime["cached_state"]=state_payload()
-            print("ENGINE_SCAN_DONE",engine.scan_count,f"{elapsed:.2f}s",len(runtime["cached_state"].get("markets",[])),flush=True)
-            drain_controls()
-        except Exception as e:
-            runtime["last_error"]=f"{type(e).__name__}: {e}"
-            print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
-            traceback.print_exc()
-        time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
 threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
 
 @app.get("/health")
@@ -175,6 +158,24 @@ def drain_controls():
         except Exception as e:
             print("CONTROL_ERROR:",action,type(e).__name__,str(e),flush=True)
         finally: control_queue.task_done()
+
+def loop():
+    while True:
+        try:
+            drain_controls()
+            scan_started=time.time()
+            print("ENGINE_SCAN_START",engine.scan_count,flush=True)
+            engine.scan()
+            elapsed=time.time()-scan_started
+            runtime["last_scan"]=time.time(); runtime["last_error"]=""
+            runtime["cached_state"]=state_payload()
+            print("ENGINE_SCAN_DONE",engine.scan_count,f"{elapsed:.2f}s",len(runtime["cached_state"].get("markets",[])),flush=True)
+            drain_controls()
+        except Exception as e:
+            runtime["last_error"]=f"{type(e).__name__}: {e}"
+            print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
+            traceback.print_exc()
+        time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
 
 @app.post("/api/control")
 def control():
