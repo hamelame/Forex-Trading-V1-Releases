@@ -1,4 +1,4 @@
-import os,sys,time,json,threading,urllib.request,zipfile,tempfile,shutil,traceback
+import os,sys,time,json,threading,urllib.request,zipfile,tempfile,shutil,traceback,queue
 from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
@@ -9,7 +9,7 @@ RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Release
 BASE=Path(__file__).resolve().parent
 CORE=Path("/tmp/fxai_pc_281")
 TOKEN=os.getenv("MOBILE_ACCESS_TOKEN","")
-lock=threading.RLock()
+lock=threading.RLock()\ncontrol_queue=queue.Queue()
 
 def ensure_pc_core():
     marker=CORE/"Forex_Trading_V1"/"forex_app"/"engine.py"
@@ -122,11 +122,15 @@ def state_payload():
 def loop():
     while True:
         try:
-            # LiveMarketFeed can spend a long time fetching a full universe.
-            # Do not hold the control lock during network/data collection.
+            drain_controls()
+            scan_started=time.time()
+            print("ENGINE_SCAN_START",engine.scan_count,flush=True)
             engine.scan()
+            elapsed=time.time()-scan_started
             runtime["last_scan"]=time.time(); runtime["last_error"]=""
             runtime["cached_state"]=state_payload()
+            print("ENGINE_SCAN_DONE",engine.scan_count,f"{elapsed:.2f}s",len(runtime["cached_state"].get("markets",[])),flush=True)
+            drain_controls()
         except Exception as e:
             runtime["last_error"]=f"{type(e).__name__}: {e}"
             print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
@@ -147,31 +151,36 @@ def get_state():
     if cached is not None:return jsonify(cached)
     return jsonify({"version":APP_VERSION,"pc_core_version":PC_VERSION,"execution":"PAPER_ONLY","engine":"PC_V2_8_1_SERVER_SIDE","neural_edge":"SHADOW_ONLY","enabled":engine.enabled,"balance":round(engine.balance,2),"equity":round(engine.equity,2),"realized":0,"unrealized":0,"open_positions":0,"max_positions":int(cfg.get("max_open_positions",5)),"positions":[],"trades":[],"markets":[],"decisions":[],"selection":{},"top_markets":[],"exposure":{},"performance":{},"learning":{},"shadow":{},"shadow_open":[],"shadow_trades":[],"market_health":{"score":0,"regime":"COLLECTING","risk":"NORMAL"},"data_quality":{"average":0,"feeds":{},"markets":0},"status":"AI engine is collecting market data","scan_count":engine.scan_count,"last_error":runtime["last_error"],"session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],"safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}})
 
+def apply_control(action,data):
+    if action=="start": engine.set_enabled(True,reset_on_start=False)
+    elif action=="pause": engine.set_enabled(False,reset_on_start=False)
+    elif action=="close_all": engine.close_all_positions("Mobile Close All")
+    elif action=="new_session":
+        engine.reset_paper_session(max(1000,min(100000,float(data.get("capital",20000)))))
+    elif action=="set_top_n":
+        n=5 if int(data.get("value",10))<=5 else 10
+        cfg["selection_mode"]=f"AUTO TOP {n}"
+        engine.apply_config(cfg,True)
+    elif action=="select_market": runtime["selected_market"]=str(data.get("symbol",""))
+    else: raise ValueError("unsupported action")
+
+def drain_controls():
+    while True:
+        try: action,data=control_queue.get_nowait()
+        except queue.Empty: break
+        try:
+            apply_control(action,data)
+            print("CONTROL_APPLIED:",action,flush=True)
+        except Exception as e:
+            print("CONTROL_ERROR:",action,type(e).__name__,str(e),flush=True)
+        finally: control_queue.task_done()
+
 @app.post("/api/control")
 def control():
     if not auth():return jsonify({"error":"unauthorized"}),401
-    data=request.get_json(silent=True) or {}; action=data.get("action","")
-    # Do not let a mobile request sit behind a long market scan until
-    # Gunicorn kills the worker. Fail fast; the iOS API client retries
-    # transient HTTP failures while the engine keeps its in-process safety.
-    acquired=lock.acquire(timeout=2.0)
-    if not acquired:
-        return jsonify({"error":"engine_busy","retry":True}),503
-    try:
-        if action=="start": engine.set_enabled(True,reset_on_start=False)
-        elif action=="pause": engine.set_enabled(False,reset_on_start=False)
-        elif action=="close_all": engine.close_all_positions("Mobile Close All")
-        elif action=="new_session":
-            engine.reset_paper_session(max(1000,min(100000,float(data.get("capital",20000)))))
-        elif action=="set_top_n":
-            n=5 if int(data.get("value",10))<=5 else 10; cfg["selection_mode"]=f"AUTO TOP {n}"; engine.apply_config(cfg,True)
-        elif action=="select_market": runtime["selected_market"]=str(data.get("symbol",""))
-        else:return jsonify({"error":"unsupported action"}),400
-    finally:
-        lock.release()
-    return jsonify({"ok":True,"action":action})
-
-@app.get("/")
-def root():return send_from_directory("web","index.html")
-@app.get("/<path:path>")
-def files(path):return send_from_directory("web",path)
+    data=request.get_json(silent=True) or {}; action=str(data.get("action",""))
+    if action not in {"start","pause","close_all","new_session","set_top_n","select_market"}:
+        return jsonify({"error":"unsupported action"}),400
+    control_queue.put((action,data))
+    print("CONTROL_QUEUED:",action,flush=True)
+    return jsonify({"ok":True,"action":action,"queued":True}),202
