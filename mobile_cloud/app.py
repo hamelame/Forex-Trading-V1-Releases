@@ -9,7 +9,8 @@ RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Release
 BASE=Path(__file__).resolve().parent
 CORE=Path("/tmp/fxai_pc_281")
 TOKEN=os.getenv("MOBILE_ACCESS_TOKEN","")
-lock=threading.RLock()\ncontrol_queue=queue.Queue()
+lock=threading.RLock()
+control_queue=queue.Queue()
 
 def ensure_pc_core():
     marker=CORE/"Forex_Trading_V1"/"forex_app"/"engine.py"
