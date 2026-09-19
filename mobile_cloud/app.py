@@ -122,10 +122,11 @@ def state_payload():
 def loop():
     while True:
         try:
-            with lock:
-                engine.scan()
-                runtime["last_scan"]=time.time(); runtime["last_error"]=""
-                runtime["cached_state"]=state_payload()
+            # LiveMarketFeed can spend a long time fetching a full universe.
+            # Do not hold the control lock during network/data collection.
+            engine.scan()
+            runtime["last_scan"]=time.time(); runtime["last_error"]=""
+            runtime["cached_state"]=state_payload()
         except Exception as e:
             runtime["last_error"]=f"{type(e).__name__}: {e}"
             print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
