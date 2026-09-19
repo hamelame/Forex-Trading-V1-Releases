@@ -193,4 +193,21 @@ def control():
     return jsonify({"ok":True,"action":action,"queued":True}),202
 
 
-threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+_engine_thread_pid=None
+_engine_thread_guard=threading.Lock()
+
+def ensure_engine_thread():
+    global _engine_thread_pid
+    pid=os.getpid()
+    if _engine_thread_pid==pid:
+        return
+    with _engine_thread_guard:
+        if _engine_thread_pid==pid:
+            return
+        threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
+        _engine_thread_pid=pid
+        print("ENGINE_THREAD_STARTED",pid,flush=True)
+
+@app.before_request
+def _start_engine_in_worker():
+    ensure_engine_thread()
