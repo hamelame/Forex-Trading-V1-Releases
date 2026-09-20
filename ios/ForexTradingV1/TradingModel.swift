@@ -17,7 +17,7 @@ import Foundation
             // Never throw the user back to login for a sleeping Render instance,
             // timeout, temporary network loss or a single malformed refresh.
             transientError=true
-            error=state == nil ? "Server is waking up — retrying…" : "Connection interrupted — keeping last live state"
+            self.error=state == nil ? "Server is waking up — retrying…" : "Connection interrupted — keeping last live state"
             if state != nil { connected=true }
         }
     }
@@ -32,7 +32,7 @@ import Foundation
         } catch APIError.unauthorized {
             connected=false; self.error="Wrong mobile access token"
         } catch {
-            error="Control request failed — current state was kept"
+            self.error="Control request failed — current state was kept"
         }
     }
     func newSession(capital:Double) async { await control("new_session",extras:["capital":capital]) }
