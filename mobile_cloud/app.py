@@ -3,7 +3,7 @@ from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
 
-APP_VERSION="2.9.4"
+APP_VERSION="2.9.5"
 PC_VERSION="2.8.1"
 RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
 BASE=Path(__file__).resolve().parent
@@ -83,6 +83,22 @@ cfg["max_open_positions"]=min(3,int(cfg.get("max_open_positions",3)))
 # Shadow Lab but prevent them dominating PAPER execution while the new gates validate.
 cfg["max_crypto_beta_positions"]=min(1,int(cfg.get("max_crypto_beta_positions",1)))
 cfg["selection_max_crypto_beta"]=min(1,int(cfg.get("selection_max_crypto_beta",1)))
+# A+ setup / multi-timeframe research policy. The v2.8.1 core consumes the
+# keys it supports; the full policy is also exposed to Shadow Lab/mobile so
+# unsupported components remain measurable rather than silently treated live.
+cfg["htf_trend_filter_enabled"]=True
+cfg["htf_trend_timeframes"]=["4H","1D"]
+cfg["htf_trend_ema_period"]=200
+cfg["entry_timeframes"]=["15m","1H"]
+cfg["min_independent_confluences"]=max(3,int(cfg.get("min_independent_confluences",0)))
+cfg["countertrend_entries_enabled"]=False
+cfg["setup_learning_enabled"]=True
+cfg["setup_learning_min_samples"]=max(60,int(cfg.get("setup_learning_min_samples",0)))
+cfg["setup_promotion_min_win_rate"]=max(65.0,float(cfg.get("setup_promotion_min_win_rate",0)))
+cfg["setup_promotion_min_expectancy_r"]=max(0.10,float(cfg.get("setup_promotion_min_expectancy_r",0)))
+cfg["setup_promotion_min_profit_factor"]=max(1.25,float(cfg.get("setup_promotion_min_profit_factor",0)))
+cfg["shadow_rr_variants"]=[1.0,1.25,1.5]
+cfg["shadow_exit_variants"]=["fixed_rr","momentum_decay","break_even","trailing"]
 db=Database("/tmp/forex_mobile_v281.db")
 try:
     feed=LiveMarketFeed(cfg["symbols"],cfg) if str(cfg.get("market_data_mode","LIVE")).upper()=="LIVE" else SyntheticFeed(cfg["symbols"])
@@ -203,6 +219,16 @@ def state_payload():
         "data_quality":{"average":round(sum(qualities)/max(1,len(qualities)),1),"feeds":feeds,"markets":len(markets)},
         "status":str(engine.last_status) if engine.last_status is not None else None,"scan_count":engine.scan_count,"last_error":runtime["last_error"],
         "session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],
+        "research_policy":{
+            "name":"A_PLUS_MTF_V1","htf":["4H","1D"],"entry_tf":["15m","1H"],"ema":200,
+            "countertrend":False,"min_confluences":int(cfg.get("min_independent_confluences",3)),
+            "promotion":{"samples":int(cfg.get("setup_learning_min_samples",60)),
+                         "win_rate":float(cfg.get("setup_promotion_min_win_rate",65)),
+                         "expectancy_r":float(cfg.get("setup_promotion_min_expectancy_r",0.10)),
+                         "profit_factor":float(cfg.get("setup_promotion_min_profit_factor",1.25))},
+            "shadow_rr":cfg.get("shadow_rr_variants",[1.0,1.25,1.5]),
+            "shadow_exits":cfg.get("shadow_exit_variants",[])
+        },
         "safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}
     }
 
