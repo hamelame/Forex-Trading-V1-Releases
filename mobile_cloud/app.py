@@ -3,7 +3,7 @@ from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
 
-APP_VERSION="2.9.1"
+APP_VERSION="2.9.2"
 PC_VERSION="2.8.1"
 RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
 BASE=Path(__file__).resolve().parent
@@ -90,8 +90,60 @@ def market_rows():
     rows.sort(key=lambda x:x["rank"],reverse=True)
     return rows
 
+def _jsonsafe(v,depth=0):
+    if depth>4:return None
+    if v is None or isinstance(v,(str,int,float,bool)):return v
+    if isinstance(v,dict):return {str(k):_jsonsafe(x,depth+1) for k,x in v.items()}
+    if isinstance(v,(list,tuple,set)):return [_jsonsafe(x,depth+1) for x in list(v)[:250]]
+    try:return _jsonsafe(asdict(v),depth+1)
+    except Exception:pass
+    try:return _jsonsafe(vars(v),depth+1)
+    except Exception:return str(v)
+
+def shadow_payload(learning,perf):
+    # PC v2.8.1 is the source of truth. Discover its Neural Edge/Shadow
+    # runtime objects instead of returning placeholder zeroes.
+    raw={}
+    for name in dir(engine):
+        low=name.lower()
+        if ("shadow" not in low and "neural" not in low) or name.startswith("_"):continue
+        try:
+            v=getattr(engine,name)
+            if callable(v):continue
+            raw[name]=_jsonsafe(v)
+        except Exception:pass
+    for srcname,src in (("learning",learning),("performance",perf)):
+        if isinstance(src,dict):
+            picked={k:v for k,v in src.items() if "shadow" in str(k).lower() or "neural" in str(k).lower() or "validation" in str(k).lower()}
+            if picked:raw[srcname]=_jsonsafe(picked)
+    flat={}
+    def walk(v):
+        if isinstance(v,dict):
+            for k,x in v.items():
+                lk=str(k).lower()
+                if isinstance(x,(int,float)) and not isinstance(x,bool):flat.setdefault(lk,float(x))
+                walk(x)
+        elif isinstance(v,list):
+            for x in v[:250]:walk(x)
+    walk(raw)
+    def num(*keys):
+        for k in keys:
+            if k in flat:return flat[k]
+        return None
+    samples=num("samples","observations","sample_count","n_samples","validation_samples")
+    acc=num("validation_accuracy","accuracy","validation_acc","shadow_accuracy")
+    wr=num("win_rate","shadow_win_rate")
+    pnl=num("shadow_pnl","pnl","profit","net_pnl")
+    summary={"samples":int(samples) if samples is not None else None,
+             "observations":int(samples) if samples is not None else None,
+             "validation_accuracy":acc,"win_rate":wr,
+             "pnl":pnl,"shadow_pnl":pnl,
+             "active":bool(raw),"source":"PC_V2_8_1_NEURAL_EDGE"}
+    return summary,raw
+
 def state_payload():
     perf=engine.performance(False); learning=engine.learning_summary(); selection=engine.selection_summary()
+    shadow,shadow_raw=shadow_payload(learning,perf)
     trades=[rowdict(x) for x in db.trades_since(engine.session_started_at)][:250]
     decisions=[rowdict(x) for x in db.recent_decisions_since(engine.session_started_at,100)]
     positions=[asdict(p) for p in engine.positions]
@@ -107,10 +159,11 @@ def state_payload():
         "realized":round(float(perf.get("pnl",0)),2),"unrealized":round(engine.unrealized_pnl(),2),
         "open_positions":len(positions),"max_positions":int(cfg.get("max_open_positions",5)),
         "positions":positions,"trades":trades,"markets":markets,"decisions":decisions,
-        "selection":selection,"top_markets":engine.top_markets(10),
+        "selection":selection,"top_markets":engine.top_markets(10),"selected_market":runtime["selected_market"],
         "exposure":engine.exposure_summary(),"performance":perf,"learning":learning,
-        "shadow":{},
-        "shadow_open":[], "shadow_trades":[],
+        "shadow":shadow,"shadow_raw":shadow_raw,
+        "shadow_open":shadow_raw.get("shadow_open",[]) if isinstance(shadow_raw.get("shadow_open",[]),list) else [],
+        "shadow_trades":shadow_raw.get("shadow_trades",[]) if isinstance(shadow_raw.get("shadow_trades",[]),list) else [],
         "market_health":{"score":round(sum(m["score"] for m in markets[:10])/max(1,len(markets[:10]))),
                          "regime":max((m["regime"] for m in markets[:10]),key=lambda x:sum(1 for y in markets[:10] if y["regime"]==x),default="COLLECTING"),
                          "risk":learning.get("risk_state","NORMAL")},
