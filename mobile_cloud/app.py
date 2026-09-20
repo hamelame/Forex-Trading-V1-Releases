@@ -3,7 +3,7 @@ from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
 
-APP_VERSION="2.9.3"
+APP_VERSION="2.9.4"
 PC_VERSION="2.8.1"
 RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
 BASE=Path(__file__).resolve().parent
@@ -69,6 +69,20 @@ cfg["rsi_pattern_block_expectancy_r"]=min(-0.10,float(cfg.get("rsi_pattern_block
 cfg["rsi_pattern_block_pf"]=max(0.85,float(cfg.get("rsi_pattern_block_pf",0)))
 cfg["neural_edge_shadow_only"]=True
 cfg["adaptive_rsi_shadow_only"]=True
+# Quality-first entry policy: WAIT is preferred to a mediocre setup.
+cfg["min_consensus_pct"]=max(75.0,float(cfg.get("min_consensus_pct",0)))
+cfg["min_edge"]=max(24.0,float(cfg.get("min_edge",0)))
+cfg["min_after_cost_edge"]=max(14.0,float(cfg.get("min_after_cost_edge",0)))
+cfg["selection_min_market_score"]=max(68.0,float(cfg.get("selection_min_market_score",0)))
+cfg["selection_min_data_quality"]=max(82.0,float(cfg.get("selection_min_data_quality",0)))
+cfg["min_data_quality"]=max(82.0,float(cfg.get("min_data_quality",0)))
+cfg["entry_cooldown_scans"]=max(24,int(cfg.get("entry_cooldown_scans",0)))
+cfg["global_entry_pacing_scans"]=max(4,int(cfg.get("global_entry_pacing_scans",0)))
+cfg["max_open_positions"]=min(3,int(cfg.get("max_open_positions",3)))
+# The observed sample was crypto-heavy and unstable. Keep crypto candidates in
+# Shadow Lab but prevent them dominating PAPER execution while the new gates validate.
+cfg["max_crypto_beta_positions"]=min(1,int(cfg.get("max_crypto_beta_positions",1)))
+cfg["selection_max_crypto_beta"]=min(1,int(cfg.get("selection_max_crypto_beta",1)))
 db=Database("/tmp/forex_mobile_v281.db")
 try:
     feed=LiveMarketFeed(cfg["symbols"],cfg) if str(cfg.get("market_data_mode","LIVE")).upper()=="LIVE" else SyntheticFeed(cfg["symbols"])
