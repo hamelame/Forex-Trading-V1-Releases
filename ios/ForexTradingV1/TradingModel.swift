@@ -12,7 +12,7 @@ import Foundation
             let s:AppState=try await api.request("api/state",token:token)
             state=s; connected=true; transientError=false; error=""
         } catch APIError.unauthorized {
-            connected=false; transientError=false; error="Wrong mobile access token"; poll?.cancel()
+            connected=false; transientError=false; self.error="Wrong mobile access token"; poll?.cancel()
         } catch {
             // Never throw the user back to login for a sleeping Render instance,
             // timeout, temporary network loss or a single malformed refresh.
@@ -30,7 +30,7 @@ import Foundation
             let _:ControlReply=try await api.request("api/control",token:token,method:"POST",body:data)
             error=""; await refresh()
         } catch APIError.unauthorized {
-            connected=false; error="Wrong mobile access token"
+            connected=false; self.error="Wrong mobile access token"
         } catch {
             error="Control request failed — current state was kept"
         }
