@@ -3,7 +3,7 @@ from pathlib import Path
 from dataclasses import asdict
 from flask import Flask,jsonify,request,send_from_directory
 
-APP_VERSION="2.9.2"
+APP_VERSION="2.9.3"
 PC_VERSION="2.8.1"
 RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
 BASE=Path(__file__).resolve().parent
@@ -50,6 +50,25 @@ from forex_app.instruments import instrument_meta
 cfg=json.loads((PCROOT/"config.json").read_text(encoding="utf-8"))
 cfg["mode"]="PAPER"; cfg["paper_only_build"]=True; cfg["neural_edge_shadow_only"]=True
 cfg["version"]=PC_VERSION
+# v2.9.3 evidence-driven PAPER research profile.
+# Derived from the Sep 19-20 paper dataset (156 closed trades). It deliberately
+# raises selectivity instead of chasing trade count. Neural Edge remains SHADOW ONLY.
+cfg["min_signal_score"]=max(90.0,float(cfg.get("min_signal_score",0)))
+cfg["selection_min_ai_score"]=max(90.0,float(cfg.get("selection_min_ai_score",0)))
+cfg["selection_min_confidence"]=max(88.0,float(cfg.get("selection_min_confidence",0)))
+cfg["min_confidence"]=max(88.0,float(cfg.get("min_confidence",0)))
+cfg["high_vol_min_signal_score"]=max(90.0,float(cfg.get("high_vol_min_signal_score",0)))
+cfg["high_vol_min_confidence"]=max(88.0,float(cfg.get("high_vol_min_confidence",0)))
+cfg["learning_min_samples"]=max(40,int(cfg.get("learning_min_samples",0)))
+cfg["learning_promotion_samples"]=max(60,int(cfg.get("learning_promotion_samples",0)))
+cfg["learning_min_expectancy_r"]=max(0.10,float(cfg.get("learning_min_expectancy_r",0)))
+cfg["learning_min_profit_factor"]=max(1.20,float(cfg.get("learning_min_profit_factor",0)))
+cfg["learning_min_win_rate"]=max(55.0,float(cfg.get("learning_min_win_rate",0)))
+cfg["rsi_pattern_min_samples"]=max(20,int(cfg.get("rsi_pattern_min_samples",0)))
+cfg["rsi_pattern_block_expectancy_r"]=min(-0.10,float(cfg.get("rsi_pattern_block_expectancy_r",-0.10)))
+cfg["rsi_pattern_block_pf"]=max(0.85,float(cfg.get("rsi_pattern_block_pf",0)))
+cfg["neural_edge_shadow_only"]=True
+cfg["adaptive_rsi_shadow_only"]=True
 db=Database("/tmp/forex_mobile_v281.db")
 try:
     feed=LiveMarketFeed(cfg["symbols"],cfg) if str(cfg.get("market_data_mode","LIVE")).upper()=="LIVE" else SyntheticFeed(cfg["symbols"])
