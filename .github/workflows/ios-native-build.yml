@@ -1,7 +1,7 @@
 name: iOS Native Build & TestFlight
 on:
   push:
-    branches: [native-ios-v1]
+    branches: [native-ios-v1, native-ios-mobile-v2926]
   workflow_dispatch:
 
 jobs:
