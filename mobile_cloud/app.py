@@ -1,325 +1,126 @@
-import os,sys,time,json,threading,urllib.request,zipfile,tempfile,shutil,traceback,queue
+"""Production WSGI bridge for the mobile-only Forex AI 2.9.2.6 PAPER engine.
+
+Render's existing Gunicorn command imports `app` from mobile_cloud/.
+The PC desktop app and settings are not started or modified.
+"""
+import hmac
+import json
+import logging
+import os
+import sys
 from pathlib import Path
-from dataclasses import asdict
-from flask import Flask,jsonify,request,send_from_directory
 
-APP_VERSION="2.9.5"
-PC_VERSION="2.8.1"
-RELEASE_URL="https://raw.githubusercontent.com/hamelame/Forex-Trading-V1-Releases/main/FX_AI_v2.8.1_REGIME_HOTFIX_PC.zip"
-BASE=Path(__file__).resolve().parent
-CORE=Path("/tmp/fxai_pc_281")
-TOKEN=os.getenv("MOBILE_ACCESS_TOKEN","")
-lock=threading.RLock()
-control_queue=queue.Queue()
+from flask import Flask, jsonify, request, send_from_directory
 
-def ensure_pc_core():
-    marker=CORE/"Forex_Trading_V1"/"forex_app"/"engine.py"
-    if marker.exists(): return CORE/"Forex_Trading_V1"
-    shutil.rmtree(CORE,ignore_errors=True); CORE.mkdir(parents=True,exist_ok=True)
-    z=CORE/"pc.zip"
-    urllib.request.urlretrieve(RELEASE_URL,z)
-    with zipfile.ZipFile(z) as q:q.extractall(CORE)
-    z.unlink(missing_ok=True)
-    # The GitHub release package can itself contain the distributable source ZIP.
-    # Recursively unpack nested ZIPs before locating the PC engine.
-    for _ in range(4):
-        roots=list(CORE.rglob("engine.py"))
-        roots=[p for p in roots if p.parent.name=="forex_app"]
-        if roots:
-            return roots[0].parent.parent
-        nested=list(CORE.rglob("*.zip"))
-        if not nested: break
-        for nz in nested:
-            out=nz.parent/(nz.stem+"_src")
-            out.mkdir(parents=True,exist_ok=True)
-            try:
-                with zipfile.ZipFile(nz) as q:q.extractall(out)
-            except zipfile.BadZipFile:
-                pass
-            nz.unlink(missing_ok=True)
-    raise RuntimeError("PC v2.8.1 core not found after recursive release extraction")
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-PCROOT=ensure_pc_core()
-sys.path.insert(0,str(PCROOT))
-from forex_app.database import Database
-from forex_app.market import SyntheticFeed
-from forex_app.live_market import LiveMarketFeed
-from forex_app.engine import TradingEngine
-from forex_app.instruments import instrument_meta
+from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 
-cfg=json.loads((PCROOT/"config.json").read_text(encoding="utf-8"))
-cfg["mode"]="PAPER"; cfg["paper_only_build"]=True; cfg["neural_edge_shadow_only"]=True
-cfg["version"]=PC_VERSION
-# v2.9.3 evidence-driven PAPER research profile.
-# Derived from the Sep 19-20 paper dataset (156 closed trades). It deliberately
-# raises selectivity instead of chasing trade count. Neural Edge remains SHADOW ONLY.
-cfg["min_signal_score"]=max(90.0,float(cfg.get("min_signal_score",0)))
-cfg["selection_min_ai_score"]=max(90.0,float(cfg.get("selection_min_ai_score",0)))
-cfg["selection_min_confidence"]=max(88.0,float(cfg.get("selection_min_confidence",0)))
-cfg["min_confidence"]=max(88.0,float(cfg.get("min_confidence",0)))
-cfg["high_vol_min_signal_score"]=max(90.0,float(cfg.get("high_vol_min_signal_score",0)))
-cfg["high_vol_min_confidence"]=max(88.0,float(cfg.get("high_vol_min_confidence",0)))
-cfg["learning_min_samples"]=max(40,int(cfg.get("learning_min_samples",0)))
-cfg["learning_promotion_samples"]=max(60,int(cfg.get("learning_promotion_samples",0)))
-cfg["learning_min_expectancy_r"]=max(0.10,float(cfg.get("learning_min_expectancy_r",0)))
-cfg["learning_min_profit_factor"]=max(1.20,float(cfg.get("learning_min_profit_factor",0)))
-cfg["learning_min_win_rate"]=max(55.0,float(cfg.get("learning_min_win_rate",0)))
-cfg["rsi_pattern_min_samples"]=max(20,int(cfg.get("rsi_pattern_min_samples",0)))
-cfg["rsi_pattern_block_expectancy_r"]=min(-0.10,float(cfg.get("rsi_pattern_block_expectancy_r",-0.10)))
-cfg["rsi_pattern_block_pf"]=max(0.85,float(cfg.get("rsi_pattern_block_pf",0)))
-cfg["neural_edge_shadow_only"]=True
-cfg["adaptive_rsi_shadow_only"]=True
-# Quality-first entry policy: WAIT is preferred to a mediocre setup.
-cfg["min_consensus_pct"]=max(75.0,float(cfg.get("min_consensus_pct",0)))
-cfg["min_edge"]=max(24.0,float(cfg.get("min_edge",0)))
-cfg["min_after_cost_edge"]=max(14.0,float(cfg.get("min_after_cost_edge",0)))
-cfg["selection_min_market_score"]=max(68.0,float(cfg.get("selection_min_market_score",0)))
-cfg["selection_min_data_quality"]=max(82.0,float(cfg.get("selection_min_data_quality",0)))
-cfg["min_data_quality"]=max(82.0,float(cfg.get("min_data_quality",0)))
-cfg["entry_cooldown_scans"]=max(24,int(cfg.get("entry_cooldown_scans",0)))
-cfg["global_entry_pacing_scans"]=max(4,int(cfg.get("global_entry_pacing_scans",0)))
-cfg["max_open_positions"]=min(3,int(cfg.get("max_open_positions",3)))
-# The observed sample was crypto-heavy and unstable. Keep crypto candidates in
-# Shadow Lab but prevent them dominating PAPER execution while the new gates validate.
-cfg["max_crypto_beta_positions"]=min(1,int(cfg.get("max_crypto_beta_positions",1)))
-cfg["selection_max_crypto_beta"]=min(1,int(cfg.get("selection_max_crypto_beta",1)))
-# A+ setup / multi-timeframe research policy. The v2.8.1 core consumes the
-# keys it supports; the full policy is also exposed to Shadow Lab/mobile so
-# unsupported components remain measurable rather than silently treated live.
-cfg["htf_trend_filter_enabled"]=True
-cfg["htf_trend_timeframes"]=["4H","1D"]
-cfg["htf_trend_ema_period"]=200
-cfg["entry_timeframes"]=["15m","1H"]
-cfg["min_independent_confluences"]=max(3,int(cfg.get("min_independent_confluences",0)))
-cfg["countertrend_entries_enabled"]=False
-cfg["setup_learning_enabled"]=True
-cfg["setup_learning_min_samples"]=max(60,int(cfg.get("setup_learning_min_samples",0)))
-cfg["setup_promotion_min_win_rate"]=max(65.0,float(cfg.get("setup_promotion_min_win_rate",0)))
-cfg["setup_promotion_min_expectancy_r"]=max(0.10,float(cfg.get("setup_promotion_min_expectancy_r",0)))
-cfg["setup_promotion_min_profit_factor"]=max(1.25,float(cfg.get("setup_promotion_min_profit_factor",0)))
-cfg["shadow_rr_variants"]=[1.0,1.25,1.5]
-cfg["shadow_exit_variants"]=["fixed_rr","momentum_decay","break_even","trailing"]
-db=Database("/tmp/forex_mobile_v281.db")
-try:
-    feed=LiveMarketFeed(cfg["symbols"],cfg) if str(cfg.get("market_data_mode","LIVE")).upper()=="LIVE" else SyntheticFeed(cfg["symbols"])
-except Exception:
-    feed=SyntheticFeed(cfg["symbols"])
-engine=TradingEngine(cfg,feed,db)
-runtime={"last_scan":0.0,"last_error":"","selected_market":"","started_at":time.time(),"cached_state":None}
+# Reuse the credential from the older mobile service without showing it.
+TOKEN = (os.getenv("FX_MOBILE_TOKEN") or os.getenv("MOBILE_ACCESS_TOKEN") or "").strip()
+if len(TOKEN) < 16:
+    raise RuntimeError("Set FX_MOBILE_TOKEN or MOBILE_ACCESS_TOKEN to 16+ chars in Render")
 
-app=Flask(__name__,static_folder="web",static_url_path="")
-
-def auth():
-    return bool(TOKEN) and request.headers.get("Authorization","")==f"Bearer {TOKEN}"
-
-def rowdict(r):
-    try:return dict(r)
-    except Exception:return r
-
-def market_rows():
-    rows=[]
-    for sym in cfg["symbols"]:
-        s=engine.snapshots.get(sym); d=engine.decisions.get(sym)
-        if not s: continue
-        try: meta=instrument_meta(sym)
-        except Exception: meta={}
-        rows.append({
-            "symbol":sym,"name":meta.get("name",sym),"category":meta.get("asset_class",""),
-            "price":round(float(s.mid),6),"bid":float(s.bid),"ask":float(s.ask),
-            "spread":round(float(s.spread_pips),2),"rsi":round(float(s.rsi),1),
-            "quality":round(float(getattr(s,"quality",0)),1),"session":s.session,
-            "feed_status":getattr(s,"feed_status",""),"feed_provider":getattr(s,"feed_provider",""),
-            "data_age_seconds":round(float(getattr(s,"data_age_seconds",0)),1),
-            "action":getattr(d,"action","WAIT"),"score":round(float(getattr(d,"score",0)),1),
-            "confidence":round(float(getattr(d,"confidence",0)),1),
-            "reason":getattr(d,"reason","Collecting market data"),
-            "regime":engine.regimes.get(sym,"MIXED"),"rank":round(float(engine.rankings.get(sym,0)),2),
-            "selected":sym in set(engine.top_markets(10))
-        })
-    rows.sort(key=lambda x:x["rank"],reverse=True)
-    return rows
-
-def _jsonsafe(v,depth=0):
-    if depth>4:return None
-    if v is None or isinstance(v,(str,int,float,bool)):return v
-    if isinstance(v,dict):return {str(k):_jsonsafe(x,depth+1) for k,x in v.items()}
-    if isinstance(v,(list,tuple,set)):return [_jsonsafe(x,depth+1) for x in list(v)[:250]]
-    try:return _jsonsafe(asdict(v),depth+1)
-    except Exception:pass
-    try:return _jsonsafe(vars(v),depth+1)
-    except Exception:return str(v)
-
-def shadow_payload(learning,perf):
-    # PC v2.8.1 is the source of truth. Discover its Neural Edge/Shadow
-    # runtime objects instead of returning placeholder zeroes.
-    raw={}
-    for name in dir(engine):
-        low=name.lower()
-        if ("shadow" not in low and "neural" not in low) or name.startswith("_"):continue
-        try:
-            v=getattr(engine,name)
-            if callable(v):continue
-            raw[name]=_jsonsafe(v)
-        except Exception:pass
-    for srcname,src in (("learning",learning),("performance",perf)):
-        if isinstance(src,dict):
-            picked={k:v for k,v in src.items() if "shadow" in str(k).lower() or "neural" in str(k).lower() or "validation" in str(k).lower()}
-            if picked:raw[srcname]=_jsonsafe(picked)
-    flat={}
-    def walk(v):
-        if isinstance(v,dict):
-            for k,x in v.items():
-                lk=str(k).lower()
-                if isinstance(x,(int,float)) and not isinstance(x,bool):flat.setdefault(lk,float(x))
-                walk(x)
-        elif isinstance(v,list):
-            for x in v[:250]:walk(x)
-    walk(raw)
-    def num(*keys):
-        for k in keys:
-            if k in flat:return flat[k]
-        return None
-    samples=num("samples","observations","sample_count","n_samples","validation_samples")
-    acc=num("validation_accuracy","accuracy","validation_acc","shadow_accuracy")
-    wr=num("win_rate","shadow_win_rate")
-    pnl=num("shadow_pnl","pnl","profit","net_pnl")
-    summary={"samples":int(samples) if samples is not None else None,
-             "observations":int(samples) if samples is not None else None,
-             "validation_accuracy":acc,"win_rate":wr,
-             "pnl":pnl,"shadow_pnl":pnl,
-             "active":bool(raw),"source":"PC_V2_8_1_NEURAL_EDGE"}
-    return summary,raw
-
-def state_payload():
-    perf=engine.performance(False); learning=engine.learning_summary(); selection=engine.selection_summary()
-    shadow,shadow_raw=shadow_payload(learning,perf)
-    trades=[rowdict(x) for x in db.trades_since(engine.session_started_at)][:250]
-    decisions=[rowdict(x) for x in db.recent_decisions_since(engine.session_started_at,100)]
-    positions=[asdict(p) for p in engine.positions]
-    markets=market_rows()
-    qualities=[m["quality"] for m in markets if m["quality"]]
-    feeds={}
-    for m in markets:
-        k=m["feed_status"] or "UNKNOWN"; feeds[k]=feeds.get(k,0)+1
-    return {
-        "version":APP_VERSION,"pc_core_version":PC_VERSION,"execution":"PAPER_ONLY",
-        "engine":"PC_V2_8_1_SERVER_SIDE","neural_edge":"SHADOW_ONLY",
-        "enabled":engine.enabled,"balance":round(engine.balance,2),"equity":round(engine.equity,2),
-        "realized":round(float(perf.get("pnl",0)),2),"unrealized":round(engine.unrealized_pnl(),2),
-        "open_positions":len(positions),"max_positions":int(cfg.get("max_open_positions",5)),
-        "positions":positions,"trades":trades,"markets":markets,"decisions":decisions,
-        "selection":selection,"top_markets":engine.top_markets(10),"selected_market":runtime["selected_market"],
-        "exposure":engine.exposure_summary(),"performance":perf,"learning":learning,
-        "shadow":shadow,"shadow_raw":shadow_raw,
-        "shadow_open":shadow_raw.get("shadow_open",[]) if isinstance(shadow_raw.get("shadow_open",[]),list) else [],
-        "shadow_trades":shadow_raw.get("shadow_trades",[]) if isinstance(shadow_raw.get("shadow_trades",[]),list) else [],
-        "market_health":{"score":round(sum(m["score"] for m in markets[:10])/max(1,len(markets[:10]))),
-                         "regime":max((m["regime"] for m in markets[:10]),key=lambda x:sum(1 for y in markets[:10] if y["regime"]==x),default="COLLECTING"),
-                         "risk":learning.get("risk_state","NORMAL")},
-        "data_quality":{"average":round(sum(qualities)/max(1,len(qualities)),1),"feeds":feeds,"markets":len(markets)},
-        "status":str(engine.last_status) if engine.last_status is not None else None,"scan_count":engine.scan_count,"last_error":runtime["last_error"],
-        "session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],
-        "research_policy":{
-            "name":"A_PLUS_MTF_V1","htf":["4H","1D"],"entry_tf":["15m","1H"],"ema":200,
-            "countertrend":False,"min_confluences":int(cfg.get("min_independent_confluences",3)),
-            "promotion":{"samples":int(cfg.get("setup_learning_min_samples",60)),
-                         "win_rate":float(cfg.get("setup_promotion_min_win_rate",65)),
-                         "expectancy_r":float(cfg.get("setup_promotion_min_expectancy_r",0.10)),
-                         "profit_factor":float(cfg.get("setup_promotion_min_profit_factor",1.25))},
-            "shadow_rr":cfg.get("shadow_rr_variants",[1.0,1.25,1.5]),
-            "shadow_exits":cfg.get("shadow_exit_variants",[])
-        },
-        "safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}
-    }
+# Engine's historical learning paths are relative to the isolated deployment root.
+os.chdir(ROOT)
+os.environ.setdefault("FX_MOBILE_DB", "/tmp/fx_mobile_v2926.sqlite")
+os.environ.setdefault("FX_MOBILE_SETTINGS", "/tmp/fx_mobile_settings_v2926.json")
+runtime = MobileRuntime()
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
 
 
+def allowed():
+    header = request.headers.get("Authorization", "")
+    return hmac.compare_digest(header.encode("utf-8"), ("Bearer " + TOKEN).encode("utf-8"))
 
-@app.get("/health")
+
+@app.after_request
+def headers(resp):
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
+        "object-src 'none'; frame-ancestors 'none'"
+    )
+    return resp
+
+
+@app.route("/health")
 def health():
-    return jsonify({"ok":not bool(runtime["last_error"]),"version":APP_VERSION,"pc_core":PC_VERSION,
-                    "execution":"PAPER_ONLY","neural_edge":"SHADOW_ONLY","engine":"PC_V2_8_1_SERVER_SIDE",
-                    "scan_count":engine.scan_count,"error":runtime["last_error"]})
-
-@app.get("/api/state")
-def get_state():
-    if not auth():return jsonify({"error":"unauthorized"}),401
-    cached=runtime.get("cached_state")
-    if cached is None:
-        cached=state_payload()
-    print("API_STATE_MARKETS:", len(cached.get("markets",[])) if isinstance(cached,dict) else -1, flush=True)
-    return jsonify(cached)
-    return jsonify({"version":APP_VERSION,"pc_core_version":PC_VERSION,"execution":"PAPER_ONLY","engine":"PC_V2_8_1_SERVER_SIDE","neural_edge":"SHADOW_ONLY","enabled":engine.enabled,"balance":round(engine.balance,2),"equity":round(engine.equity,2),"realized":0,"unrealized":0,"open_positions":0,"max_positions":int(cfg.get("max_open_positions",5)),"positions":[],"trades":[],"markets":[],"decisions":[],"selection":{},"top_markets":[],"exposure":{},"performance":{},"learning":{},"shadow":{},"shadow_open":[],"shadow_trades":[],"market_health":{"score":0,"regime":"COLLECTING","risk":"NORMAL"},"data_quality":{"average":0,"feeds":{},"markets":0},"status":"AI engine is collecting market data","scan_count":engine.scan_count,"last_error":runtime["last_error"],"session_started_at":engine.session_started_at,"updated_at":runtime["last_scan"],"safety":{"paper_only":True,"shadow_only":True,"broker_orders":False}})
-
-def apply_control(action,data):
-    if action=="start": engine.set_enabled(True,reset_on_start=False)
-    elif action=="pause": engine.set_enabled(False,reset_on_start=False)
-    elif action=="close_all": engine.close_all_positions("Mobile Close All")
-    elif action=="new_session":
-        engine.reset_paper_session(max(1000,min(100000,float(data.get("capital",20000)))))
-    elif action=="set_top_n":
-        n=5 if int(data.get("value",10))<=5 else 10
-        cfg["selection_mode"]=f"AUTO TOP {n}"
-        engine.apply_config(cfg,True)
-    elif action=="select_market": runtime["selected_market"]=str(data.get("symbol",""))
-    else: raise ValueError("unsupported action")
-
-def drain_controls():
-    while True:
-        try: action,data=control_queue.get_nowait()
-        except queue.Empty: break
-        try:
-            apply_control(action,data)
-            print("CONTROL_APPLIED:",action,flush=True)
-        except Exception as e:
-            print("CONTROL_ERROR:",action,type(e).__name__,str(e),flush=True)
-        finally: control_queue.task_done()
-
-def loop():
-    while True:
-        try:
-            drain_controls()
-            scan_started=time.time()
-            print("ENGINE_SCAN_START",engine.scan_count,flush=True)
-            engine.scan()
-            elapsed=time.time()-scan_started
-            runtime["last_scan"]=time.time(); runtime["last_error"]=""
-            runtime["cached_state"]=state_payload()
-            print("ENGINE_SCAN_DONE",engine.scan_count,f"{elapsed:.2f}s",len(runtime["cached_state"].get("markets",[])),flush=True)
-            drain_controls()
-        except Exception as e:
-            runtime["last_error"]=f"{type(e).__name__}: {e}"
-            print("ENGINE_LOOP_ERROR:",runtime["last_error"],flush=True)
-            traceback.print_exc()
-        time.sleep(max(1.0,float(cfg.get("scan_interval_seconds",2.0))))
+    return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True)
 
 
+@app.route("/api/state")
+def state():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(clean_value(runtime.state()))
+    except Exception:
+        logging.exception("State API failure")
+        return jsonify(error="Internal server error"), 500
 
-@app.post("/api/control")
-def control():
-    if not auth():return jsonify({"error":"unauthorized"}),401
-    data=request.get_json(silent=True) or {}; action=str(data.get("action",""))
-    if action not in {"start","pause","close_all","new_session","set_top_n","select_market"}:
-        return jsonify({"error":"unsupported action"}),400
-    control_queue.put((action,data))
-    print("CONTROL_QUEUED:",action,flush=True)
-    return jsonify({"ok":True,"action":action,"queued":True}),202
+
+@app.route("/api/candles")
+def candles():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(clean_value(runtime.candles(request.args.get("symbol", ""))))
+    except (KeyError, ValueError) as e:
+        return jsonify(error=str(e)), 400
+    except Exception:
+        logging.exception("Candles API failure")
+        return jsonify(error="Internal server error"), 500
 
 
-_engine_thread_pid=None
-_engine_thread_guard=threading.Lock()
+@app.route("/api/replay")
+def replay():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    trade_id = request.args.get("trade_id", "")
+    if len(trade_id) > 100:
+        return jsonify(error="Trade ID too long"), 400
+    try:
+        return jsonify(clean_value(runtime.replay(trade_id)))
+    except (KeyError, ValueError) as e:
+        return jsonify(error=str(e)), 400
+    except Exception:
+        logging.exception("Replay API failure")
+        return jsonify(error="Internal server error"), 500
 
-def ensure_engine_thread():
-    global _engine_thread_pid
-    pid=os.getpid()
-    if _engine_thread_pid==pid:
-        return
-    with _engine_thread_guard:
-        if _engine_thread_pid==pid:
-            return
-        threading.Thread(target=loop,daemon=True,name="pc-v281-engine").start()
-        _engine_thread_pid=pid
-        print("ENGINE_THREAD_STARTED",pid,flush=True)
 
-@app.before_request
-def _start_engine_in_worker():
-    ensure_engine_thread()
+@app.route("/api/command/<name>", methods=["POST"])
+def command(name):
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict):
+        return jsonify(error="JSON object expected"), 400
+    try:
+        return jsonify(clean_value(runtime.command(name, values)))
+    except (KeyError, ValueError) as e:
+        return jsonify(error=str(e)), 400
+    except Exception:
+        logging.exception("Command API failure")
+        return jsonify(error="Internal server error"), 500
+
+
+@app.route("/")
+def index():
+    return send_from_directory(WEB, "index.html")
+
+
+@app.route("/<path:asset>")
+def asset(asset):
+    if asset not in ("app.js", "style.css", "icon.svg", "manifest.webmanifest"):
+        return jsonify(error="Not found"), 404
+    return send_from_directory(WEB, asset)

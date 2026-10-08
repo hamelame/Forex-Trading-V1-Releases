@@ -1,0 +1,111 @@
+import http.client
+import json
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from mobile.server import MobileRuntime, Server
+from forex_app.market import SyntheticFeed
+
+
+class MobileBridgeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.settings = root / 'settings.json'
+        cls.config = root / 'cfg.json'
+        symbols = ['EURUSD', 'GBPUSD', 'XAUUSD']
+        cls.config.write_text(json.dumps({
+            'symbols': symbols, 'paper_trading_capital': 20000.0,
+            'starting_balance': 20000.0, 'market_data_mode': 'SYNTHETIC',
+            'min_signal_score': 63, 'selection_mode': 'AUTO TOP 10',
+            'market_scan_top_n': 10, 'scan_interval_seconds': 2.0,
+            'risk_per_trade_pct': .4, 'max_total_risk_pct': 1.6,
+            'max_open_positions': 5,
+            'trading_profile': 'AI TRADING',
+            'max_category_positions': 2,
+            'category_risk_forex': 1.0, 'category_risk_metals': .8,
+            'max_spread_pips': 2.5,
+            'max_consecutive_losses': 3, 'daily_loss_limit_pct': 2.0,
+        }), encoding='utf-8')
+        cls.env = patch.dict('os.environ', {'FX_MOBILE_SETTINGS': str(cls.settings)})
+        cls.env.start()
+        cls.runtime = MobileRuntime(config_path=cls.config, db_path=root/'db.sqlite',
+                                    feed=SyntheticFeed(symbols), start_worker=False)
+        cls.server = Server(('127.0.0.1', 0), cls.runtime, 'a'*32)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.runtime.close()
+        cls.env.stop()
+        cls.tmp.cleanup()
+
+    def req(self,method,path,payload=None,token='a'*32):
+        c=http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        body=json.dumps(payload).encode() if payload is not None else None
+        headers={'Content-Type':'application/json'}
+        if token is not None:headers['Authorization']='Bearer '+token
+        c.request(method,path,body,headers)
+        r=c.getresponse();v=json.loads(r.read());c.close();return r.status,v
+
+    def test_server_requires_auth(self):
+        status,_=self.req('GET','/api/state',token=None)
+        self.assertEqual(status,401)
+        status,_=self.req('POST','/api/command/start',{},token='wrong')
+        self.assertEqual(status,401)
+        status,_=self.req('GET','/health',token=None)
+        self.assertEqual(status,200)
+
+    def test_state_parity(self):
+        status,data=self.req('GET','/api/state')
+        self.assertEqual(status,200)
+        for key in ('markets','positions','decisions','trades','equity_history','neural','adaptive_rsi','risk','selection','settings','replays'):
+            self.assertIn(key,data)
+        self.assertTrue(data['paper_only'])
+        self.assertFalse(data['running'])
+
+    def test_controls_and_whitelist(self):
+        status,_=self.req('POST','/api/command/start',{})
+        self.assertEqual(status,200)
+        self.assertTrue(self.runtime.engine.enabled)
+        self.req('POST','/api/command/pause',{})
+        self.assertFalse(self.runtime.engine.enabled)
+        status,_=self.req('POST','/api/command/settings',{'values':{'paper_only_build':False}})
+        self.assertEqual(status,400)
+        status,_=self.req('POST','/api/command/settings',{'values':{'risk_per_trade_pct':999}})
+        self.assertEqual(status,400)
+        status,_=self.req('POST','/api/command/settings',{'values':{'paper_trading_capital':25000,'max_open_positions':4}})
+        self.assertEqual(status,200)
+        self.assertEqual(self.runtime.engine.balance,20000)  # next session only
+        self.req('POST','/api/command/new-session',{})
+        self.assertEqual(self.runtime.engine.balance,25000)
+        self.assertEqual(self.runtime.session_start_capital,25000)
+        self.assertTrue(self.settings.exists())
+        self.assertEqual(json.loads(self.settings.read_text())['max_open_positions'],4)
+
+    def test_market_chart_and_replay_validation(self):
+        code,data=self.req('GET','/api/candles?symbol=UNKNOWN')
+        self.assertEqual(code,400)
+        code,data=self.req('GET','/api/candles?symbol=EURUSD')
+        self.assertEqual(code,200)
+        self.assertEqual(data['candles'],[])
+        code,data=self.req('GET','/api/replay?trade_id=unknown')
+        self.assertEqual(code,400)
+        code,data=self.req('POST','/api/command/select-chart',{'symbol':'XAUUSD'})
+        self.assertEqual(code,200)
+        self.assertEqual(self.runtime.cfg['selected_chart_symbol'],'XAUUSD')
+        code,data=self.req('POST','/api/command/manual-symbols',{'symbols':['EURUSD','XAUUSD']})
+        self.assertEqual(code,200)
+        self.assertEqual(self.runtime.cfg['manual_selected_symbols'],['EURUSD','XAUUSD'])
+        code,data=self.req('POST','/api/command/manual-symbols',{'symbols':['NOT_REAL']})
+        self.assertEqual(code,400)
+
+
+if __name__ == '__main__': unittest.main()
