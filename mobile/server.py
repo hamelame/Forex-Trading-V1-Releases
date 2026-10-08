@@ -119,6 +119,8 @@ class MobileRuntime:
         self._learning_at = 0.0
         self.last_scan_at = None
         self.last_scan_error = None
+        self.completed_scans = 0
+        self.last_scan_duration_seconds = None
         self.started_at = utcnow()
         self.worker = None
         if start_worker:
@@ -133,6 +135,8 @@ class MobileRuntime:
                     self.engine.scan()
                     self.last_scan_at = utcnow()
                     self.last_scan_error = None
+                    self.completed_scans += 1
+                    self.last_scan_duration_seconds = round(time.monotonic() - begin, 2)
             except Exception as exc:
                 logging.exception("Engine scan failed")
                 self.last_scan_error = str(exc)[:240]
@@ -156,6 +160,11 @@ class MobileRuntime:
             for attr in ("mid", "bid", "ask", "spread_pips", "rsi", "atr_pips", "session",
                          "feed_status", "feed_provider", "data_age_seconds", "quality", "timestamp"):
                 out[attr] = getattr(snap, attr, None)
+        else:
+            # Display missing provider data without inventing synthetic prices.
+            provider_errors = getattr(self.feed, "_last_error", {})
+            error = provider_errors.get(sym) if isinstance(provider_errors, dict) else None
+            out.update(feed_status="NO LIVE DATA", feed_error=str(error or "Waiting for live candles")[:180])
         if decision:
             out["decision"] = {k: getattr(decision, k) for k in
                                ("action", "score", "confidence", "reason", "stop_pips", "target_pips", "timestamp")}
@@ -166,13 +175,32 @@ class MobileRuntime:
             e = self.engine
             top = e.top_markets(12)
             ranked = sorted(e.rankings, key=e.rankings.get, reverse=True)
+            # All configured markets stay visible while real-time data loads.
+            ranked.extend(sym for sym in self.cfg["symbols"] if sym not in e.rankings)
             markets = [self._market(sym) for sym in ranked]
+            provider_errors = getattr(self.feed, "_last_error", {})
+            if not isinstance(provider_errors, dict):
+                provider_errors = {}
+            attempts = getattr(self.feed, "_last_fetch", {})
+            errors = [{"symbol": sym, "reason": str(reason)[:180]}
+                      for sym, reason in list(provider_errors.items())[:12]]
+            diagnostics = {
+                "configured": len(self.cfg["symbols"]),
+                "ready": len(e.snapshots),
+                "fetch_attempts": len(attempts) if isinstance(attempts, dict) else 0,
+                "provider_errors": len(provider_errors),
+                "sample_errors": errors,
+                "scan_worker_alive": self.worker.is_alive() if self.worker else False,
+                "completed_scans": self.completed_scans,
+                "scan_duration_seconds": self.last_scan_duration_seconds,
+            }
             session_trades = [dict(r) for r in self.db.trades_since(e.session_started_at)[:150]]
             equity_rows = [dict(r) for r in self.db.equity_history_since(e.session_started_at, 160)]
             return clean_value({
                 "version": __version__, "paper_only": True, "running": e.enabled,
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
+                "feed_diagnostics": diagnostics,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
                 "balance": e.balance, "equity": e.equity, "unrealized": e.unrealized_pnl(),
                 "realized": e.balance - self.session_start_capital,
@@ -212,6 +240,9 @@ class MobileRuntime:
             if name == "start":
                 if e.enabled:
                     return {"message": "AI already active", "running": True}
+                # LIVE mobile sessions cannot start without a single real price.
+                if str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE" and not e.snapshots:
+                    raise ValueError("No fresh live market data. PAPER AI remains paused.")
                 if e.positions:
                     # Preserve any paused open PAPER positions; never reset them silently.
                     e.set_enabled(True, reset_on_start=False)
