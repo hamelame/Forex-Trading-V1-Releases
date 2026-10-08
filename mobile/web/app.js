@@ -46,8 +46,8 @@ function renderQuality(){
  let s=app.state,by={},d=s.feed_diagnostics||{};
  s.markets.forEach(m=>{let key=m.feed_status||'NO DATA';by[key]=(by[key]||0)+1});
  let diagnostic='<p class="feed-summary">LIVE feed: '+(d.ready||0)+' / '+(d.configured||s.symbols.length)+' symbols · '+(d.provider_errors||0)+' errors · '+(d.fetch_attempts||0)+' attempted · scan worker '+(d.scan_worker_alive?'running':'NOT RUNNING')+' · '+(d.completed_scans||0)+' scans</p>';
- let errors=(d.sample_errors||[]).map(e=>row(e.symbol,'<span class="negative">Provider error</span>',e.reason)).join('');
- $('quality-list').innerHTML=diagnostic+'<p class="feed-summary">'+Object.entries(by).map(([k,v])=>escape(k)+': '+v).join(' · ')+'</p>'+(errors?'<h3>Provider diagnostics</h3>'+errors:'')+s.markets.map(m=>row(m.symbol,`<span class="${m.feed_status==='LIVE'?'positive':'gold'}">${escape(m.feed_status||'NO DATA')}</span>`,`${m.feed_provider||'—'} · ${m.feed_error||'age '+num(m.data_age_seconds||0,0)+'s · quality '+num(m.quality||0,0)+'%'}`)).join('');
+ let errors=(d.sample_errors||[]).map(e=>row(e.symbol,'<span class="negative">Provider error</span>',escape(e.reason))).join('');
+ $('quality-list').innerHTML=diagnostic+'<p class="feed-summary">'+Object.entries(by).map(([k,v])=>escape(k)+': '+v).join(' · ')+'</p>'+(errors?'<h3>Provider diagnostics</h3>'+errors:'')+s.markets.map(m=>row(m.symbol,`<span class="${m.feed_status==='LIVE'?'positive':'gold'}">${escape(m.feed_status||'NO DATA')}</span>`,`${escape(m.feed_provider||'—')} · ${m.feed_error?escape(m.feed_error):'age '+num(m.data_age_seconds||0,0)+'s · quality '+num(m.quality||0,0)+'%'}`)).join('');
  $('risk-details').innerHTML=statObject(s.risk,35);
 }
 
