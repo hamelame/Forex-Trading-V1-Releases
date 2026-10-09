@@ -1,0 +1,21 @@
+name: Mobile server regression tests
+on:
+  push:
+    branches:
+      - mobile-v2926-nonblocking-state-20261009
+  workflow_dispatch:
+jobs:
+  mobile-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run mobile bridge and feed tests
+        run: python -m unittest discover -s mobile/tests -p 'test_*.py' -v
+      - name: Check browser JavaScript syntax
+        run: node --check mobile/web/app.js
+      - name: Compile modified Python modules
+        run: python -m py_compile mobile/server.py mobile_cloud/app.py forex_app/live_market.py
