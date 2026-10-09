@@ -4,6 +4,7 @@ on:
     branches:
       - mobile-v2926-nonblocking-state-20261009
       - mobile-v2926-paper-trading-test-20261009
+      - mobile-v2926-feed-hang-debug-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
