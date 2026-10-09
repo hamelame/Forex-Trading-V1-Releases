@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -27,7 +28,31 @@ if len(TOKEN) < 16:
 os.chdir(ROOT)
 os.environ.setdefault("FX_MOBILE_DB", "/tmp/fx_mobile_v2926.sqlite")
 os.environ.setdefault("FX_MOBILE_SETTINGS", "/tmp/fx_mobile_settings_v2926.json")
-runtime = MobileRuntime()
+# Gunicorn may import this module in its parent/preload process. NEVER
+# create MobileRuntime on import: its scanner + provider threads would then
+# disappear after fork, leaving the engine lock apparently held forever.
+# Resolve the runtime only from the serving worker, on its first authorized
+# API request. Keep process identity to defend against alternate preloaders.
+runtime = None
+runtime_pid = None
+runtime_init_lock = threading.Lock()
+
+def get_runtime():
+    global runtime, runtime_pid
+    pid = os.getpid()
+    if runtime is not None and runtime_pid == pid:
+        return runtime
+    with runtime_init_lock:
+        if runtime is None or runtime_pid != pid:
+            runtime = MobileRuntime()
+            runtime_pid = pid
+            logging.warning(
+                "Mobile PAPER engine started inside serving process pid=%s; scanner_alive=%s watchdog_alive=%s",
+                pid, bool(runtime.worker and runtime.worker.is_alive()),
+                bool(runtime.watchdog and runtime.watchdog.is_alive())
+            )
+        return runtime
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
 
@@ -61,7 +86,7 @@ def state():
     if not allowed():
         return jsonify(error="Access token required"), 401
     try:
-        return jsonify(clean_value(runtime.state()))
+        return jsonify(clean_value(get_runtime().state()))
     except Exception:
         logging.exception("State API failure")
         return jsonify(error="Internal server error"), 500
@@ -72,7 +97,7 @@ def candles():
     if not allowed():
         return jsonify(error="Access token required"), 401
     try:
-        return jsonify(clean_value(runtime.candles(request.args.get("symbol", ""))))
+        return jsonify(clean_value(get_runtime().candles(request.args.get("symbol", ""))))
     except (KeyError, ValueError) as e:
         return jsonify(error=str(e)), 400
     except Exception:
@@ -88,7 +113,7 @@ def replay():
     if len(trade_id) > 100:
         return jsonify(error="Trade ID too long"), 400
     try:
-        return jsonify(clean_value(runtime.replay(trade_id)))
+        return jsonify(clean_value(get_runtime().replay(trade_id)))
     except (KeyError, ValueError) as e:
         return jsonify(error=str(e)), 400
     except Exception:
@@ -106,7 +131,7 @@ def command(name):
     if not isinstance(values, dict):
         return jsonify(error="JSON object expected"), 400
     try:
-        return jsonify(clean_value(runtime.command(name, values)))
+        return jsonify(clean_value(get_runtime().command(name, values)))
     except (KeyError, ValueError) as e:
         return jsonify(error=str(e)), 400
     except Exception:
