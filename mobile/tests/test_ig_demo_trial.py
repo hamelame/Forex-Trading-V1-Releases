@@ -85,8 +85,24 @@ class FirstIGDemoTradeTests(unittest.TestCase):
         if path == "/positions":
             return {"positions": list(self.positions)}
         if path == "/markets/" + trial.MINI_EPIC:
-            return {"instrument": {"epic": trial.MINI_EPIC, "type": "CURRENCIES"},
-                    "snapshot": {"marketStatus": "TRADEABLE", "delayTime": 0}}
+            return {
+                "instrument": {
+                    "epic": trial.MINI_EPIC, "type": "CURRENCIES",
+                    "unit": "CONTRACTS", "expiry": "-",
+                    "contractSize": "10000", "valueOfOnePip": "1.00",
+                    "stopsLimitsAllowed": True,
+                    "currencies": [{"code": "USD"}, {"code": "NOK"}],
+                },
+                "snapshot": {
+                    "marketStatus": "TRADEABLE", "delayTime": 0,
+                    "bid": 11200.5, "offer": 11201.8
+                },
+                "dealingRules": {
+                    "minDealSize": {"unit": "POINTS", "value": 0.1},
+                    "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": 2.0},
+                    "marketOrderPreference": "AVAILABLE_DEFAULT_OFF"
+                },
+            }
         self.fail("Unexpected read-only broker route: " + path)
 
     def fake_broker(self, req, timeout):
@@ -210,6 +226,32 @@ class FirstIGDemoTradeTests(unittest.TestCase):
                 p = dict(self.preflight, **{field: value})
                 with self.assertRaises(trial.IGTrialError):
                     trial._validate_preflight(p)
+
+    def test_broker_changed_spread_blocks_before_journal_or_submit(self):
+        original = self.ig_get
+        def changed_quote(path, **kw):
+            result = original(path, **kw)
+            if path == "/markets/" + trial.MINI_EPIC:
+                result["snapshot"]["offer"] = 11220.0
+            return result
+        with patch.object(trial, "_read_only_get", side_effect=changed_quote):
+            with self.assertRaisesRegex(trial.IGTrialError, "spread"):
+                self.invoke()
+        self.assertFalse(self.journal().exists())
+        self.assertEqual([m for m,_ in self.calls].count("POST"), 0)
+
+    def test_broker_changed_stop_rules_blocks_before_submit(self):
+        original = self.ig_get
+        def changed_rules(path, **kw):
+            result = original(path, **kw)
+            if path == "/markets/" + trial.MINI_EPIC:
+                result["dealingRules"]["minNormalStopOrLimitDistance"]["value"] = 30
+            return result
+        with patch.object(trial, "_read_only_get", side_effect=changed_rules):
+            with self.assertRaisesRegex(trial.IGTrialError, "stop"):
+                self.invoke()
+        self.assertFalse(self.journal().exists())
+        self.assertEqual([m for m,_ in self.calls].count("POST"), 0)
 
     def test_uncertain_post_response_is_journaled_and_never_retried(self):
         def connection_drop(req, timeout):
