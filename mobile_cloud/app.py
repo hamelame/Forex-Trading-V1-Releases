@@ -213,6 +213,8 @@ def ig_auto_paper_snapshot():
             ),
             "eurusd_feed_status": str(getattr(snap, "feed_status", "")) if snap else "",
             "eurusd_feed_age_seconds": feed_age,
+            "eurusd_bid": float(getattr(snap, "bid", 0.0)) if snap else None,
+            "eurusd_ask": float(getattr(snap, "ask", 0.0)) if snap else None,
             "paper_positions": [
                 {
                     "id": p.id, "symbol": p.symbol, "side": p.side,
@@ -248,6 +250,19 @@ def ig_demo_auto_status():
     except Exception:
         logging.error("IG DEMO AUTO status unavailable")
         return jsonify(error="IG DEMO AUTO requires manual review"), 503
+
+
+@app.route("/api/ig-demo/auto/refresh", methods=["POST"])
+def ig_demo_auto_refresh():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(get_ig_demo_auto().reconcile())
+    except (IGTrialError, IGDemoError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO read-only broker reconciliation unavailable")
+        return jsonify(error="IG DEMO broker verification unavailable. Check IG."), 503
 
 
 @app.route("/api/ig-demo/auto/start", methods=["POST"])
