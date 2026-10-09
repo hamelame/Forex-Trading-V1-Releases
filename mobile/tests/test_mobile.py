@@ -80,11 +80,16 @@ class MobileBridgeTests(unittest.TestCase):
         self.assertTrue(acquired.wait(timeout=1.0))
         try:
             start = time.monotonic()
-            code, payload = self.req('GET', '/api/state')
+            with patch.object(self.runtime.feed, '_last_error', {'EURUSD':'Provider HTTP 429'}, create=True), \
+                 patch.object(self.runtime.feed, '_last_fetch', {'EURUSD':time.time()}, create=True):
+                code, payload = self.req('GET', '/api/state')
             elapsed = time.monotonic() - start
             self.assertEqual(code, 200)
             self.assertTrue(payload['paper_only'])
             self.assertTrue(payload['state_stale'])
+            self.assertEqual(payload['feed_diagnostics']['failed_fetches'], 1)
+            self.assertEqual(payload['feed_diagnostics']['fetch_attempts'], 1)
+            self.assertIn('Provider HTTP 429', payload['feed_diagnostics']['examples'][0])
             self.assertIn('SCANNER BUSY', payload['status'])
             self.assertLess(elapsed, 1.5)
         finally:
