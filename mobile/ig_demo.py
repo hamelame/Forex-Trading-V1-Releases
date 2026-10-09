@@ -21,6 +21,55 @@ DEMO_BASE = "https://demo-api.ig.com/gateway/deal"
 ENV_NAMES = ("IG_DEMO_API_KEY", "IG_DEMO_USERNAME", "IG_DEMO_PASSWORD")
 MAX_BYTES = 1_000_000
 
+# IG errorCode values from its published /session API reference.
+# Translate only these fixed codes. Never echo an arbitrary error response
+# (including account identifiers, tokens, credentials or server-provided text).
+IG_ERROR_HINTS = {
+    "error.security.invalid-details": "IG DEMO rejected the demo API username or password.",
+    "error.security.api-key-invalid": "IG DEMO says the API key is invalid.",
+    "error.security.api-key-disabled": "IG DEMO says the API key is disabled.",
+    "error.security.api-key-restricted": "IG DEMO says this API key is restricted for this account.",
+    "error.security.api-key-revoked": "IG DEMO says the API key has been revoked.",
+    "error.security.api-key-missing": "IG DEMO did not receive an API key.",
+    "endpoint.unavailable.for.api-key": "IG DEMO says this API key cannot access the requested endpoint.",
+    "error.security.too-many-failed-attempts": "Too many failed IG DEMO logins. Wait before testing again.",
+    "error.public-api.failure.preferred.account.not.set": "Select a preferred IG DEMO account on the IG website.",
+    "error.public-api.failure.preferred.account.disabled": "The preferred IG DEMO account is disabled.",
+    "error.public-api.failure.pending.agreements.required": "IG DEMO requires you to accept agreements in the IG web platform.",
+    "error.public-api.failure.kyc.required": "IG requires account verification on its web platform.",
+    "error.security.account-not-yet-activated": "The IG account has not been activated yet.",
+    "error.public-api.failure.missing.credentials": "IG DEMO reports missing login credentials.",
+    "error.public-api.exceeded-api-key-allowance": "IG DEMO API request allowance exceeded. Try later.",
+    "error.public-api.exceeded-account-allowance": "IG DEMO account request allowance exceeded. Try later.",
+    "error.security.account-access-denied": "IG DEMO account access is denied. Check account permissions.",
+    "authentication.failure.not-a-client-account": "IG DEMO says these credentials are not for a client account.",
+}
+
+
+def _safe_ig_http_error(exc):
+    """Read a *bounded* IG JSON error body, return only fixed approved text.
+
+    HTTP status 401 is usually account credentials/permissions while 403 is
+    often API key/allowance. Keeping them distinct helps avoid unnecessary
+    API key rotations. Never return raw errorCode or server message.
+    """
+    code = None
+    try:
+        payload = json.loads(exc.read(4096).decode("utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("errorCode"), str):
+            code = payload["errorCode"]
+    except (AttributeError, OSError, ValueError, UnicodeError, TypeError):
+        pass
+    if code in IG_ERROR_HINTS:
+        return IG_ERROR_HINTS[code]
+    if exc.code == 401:
+        return "IG DEMO login denied (HTTP 401). Check demo API username, password and account permissions."
+    if exc.code == 403:
+        return "IG DEMO access denied (HTTP 403). Check API key and demo account permissions."
+    if exc.code == 429:
+        return "IG DEMO request limit reached. Try again later."
+    return "IG DEMO request failed (HTTP %d)." % exc.code
+
 
 class IGDemoError(Exception):
     """Safe, human-readable error that never includes credentials or tokens."""
@@ -73,12 +122,9 @@ def _call(path, *, method="GET", key, cst=None, xst=None, body=None, opener=None
                 raise IGDemoError("Invalid IG DEMO response")
             return parsed, response.headers
     except urllib.error.HTTPError as exc:
-        # Never propagate API error bodies, which may contain account metadata.
-        if exc.code in (401, 403):
-            raise IGDemoError("IG DEMO authentication rejected. Check demo API username, password and key.") from None
-        if exc.code == 429:
-            raise IGDemoError("IG DEMO request limit reached; try again later.") from None
-        raise IGDemoError("IG DEMO is unavailable (HTTP %s)." % exc.code) from None
+        # The error response is inspected ONLY for a known fixed IG errorCode.
+        # All response fields, account identifiers and auth headers remain private.
+        raise IGDemoError(_safe_ig_http_error(exc)) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise IGDemoError("IG DEMO could not be reached; try again later.") from None
     except (UnicodeError, json.JSONDecodeError):
