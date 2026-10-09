@@ -256,7 +256,21 @@ class MobileRuntime:
             stale["status"] = "SCANNER BUSY · showing last known PAPER snapshot"
             if elapsed >= 10 and time.monotonic() - self._lock_warning_at >= 30:
                 self._lock_warning_at = time.monotonic()
-                logging.warning("Mobile state snapshot returned from cache; trading scan lock busy %.1f sec", elapsed)
+                # This runs on the HTTP thread even if the watchdog thread
+                # itself has stalled. Never log stack source lines or secrets.
+                thread_ident = self.worker.ident if self.worker else None
+                frame = sys._current_frames().get(thread_ident) if thread_ident else None
+                frames = traceback.extract_stack(frame)[-12:] if frame else []
+                locations = " > ".join(
+                    f"{Path(item.filename).name}:{item.name}:{item.lineno}"
+                    for item in frames
+                )
+                logging.warning(
+                    "Mobile scan lock busy %.1fs, scanner_alive=%s watchdog_alive=%s frame=%s",
+                    elapsed, bool(self.worker and self.worker.is_alive()),
+                    bool(self.watchdog and self.watchdog.is_alive()),
+                    locations or "<no frame>")
+
             return stale
         try:
             e = self.engine
