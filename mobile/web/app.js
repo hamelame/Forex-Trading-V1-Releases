@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
-const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','settings'];
-const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality',settings:'Settings'};
+const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','ig-demo','settings'];
+const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality','ig-demo':'IG DEMO Live Test',settings:'Settings'};
 const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v,n=2)=>(Number.isFinite(Number(v))?Number(v).toLocaleString('en-US',{minimumFractionDigits:n,maximumFractionDigits:n}):'—');
@@ -78,7 +78,45 @@ async function testIGDemoConnection(){
  }catch(err){el.textContent='IG DEMO connection failed: '+String(err.message||err);toast('IG DEMO connection failed',true)}
  finally{button.disabled=false;button.textContent='Test IG DEMO Connection'}
 }
-function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(!ready?.ready){toast(ready?.reason||'Wait for fresh LIVE market data before starting PAPER AI.',true);return}if(await confirmDialog('Start PAPER AI','Begin a simulated-trading test on fresh LIVE prices? No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
+
+async function checkIGDemoReadiness(){
+ const button=$('ig-demo-preflight'),state=$('ig-demo-live-status'),out=$('ig-demo-live-results');
+ if(button.disabled)return;
+ button.disabled=true;button.textContent='Checking IG DEMO…';
+ state.textContent='Loading verified IG DEMO CFD account, existing positions and EURUSD market rules. NO orders.';
+ out.textContent='';
+ try{
+  const p=await api('/api/ig-demo/preflight',{method:'POST'});
+  state.textContent='CONNECTED TO IG DEMO CFD · read-only risk preflight succeeded. Broker execution is NOT armed.';
+  let m=p.market_candidates||[];
+  out.innerHTML=
+   row('IG environment','<span class="positive">DEMO CFD</span>','NO live account access')+
+   row('IG available funds',escape(String(p.account_available??'—')+' '+(p.account_currency||'')), 'IG DEMO funds, separate from PAPER')+
+   row('IG balance',escape(String(p.account_balance??'—')+' '+(p.account_currency||'')))+
+   row('Existing IG positions',escape(String(p.existing_ig_positions??'—')),'Must reconcile any existing broker trades before auto mode')+
+   '<h3>EURUSD IG CFD instruments</h3>'+
+   (m.length?m.map(v=>'<div class="panel">'+
+       '<strong>'+escape(v.name)+' · '+escape(v.epic)+'</strong>'+
+       '<div class="mini-stats">'+
+       kv('Market status',v.status)+kv('Expiry',v.expiry)+
+       kv('Bid / Offer',String(v.bid??'—')+' / '+String(v.offer??'—'))+
+       kv('Minimum size',String(v.minimum_deal_size?.value??'—')+' '+String(v.minimum_deal_size?.unit||''))+
+       kv('Minimum stop distance',String(v.minimum_stop?.value??'—')+' '+String(v.minimum_stop?.unit||''))+
+       kv('Value of one pip',v.value_of_one_pip)+
+       kv('Contract size',v.contract_size)+kv('Unit',v.unit)+
+       kv('Stops permitted',String(v.stops_allowed))+
+       kv('Order preference',v.market_order_preference)+
+       '</div></div>').join(''):'<p class="muted">IG returned no confirmed EURUSD CFD instruments. Need manual EPIC discovery before orders.</p>')+
+   '<p class="muted">'+escape(p.blocked_reason||'Broker orders are still disabled.')+'</p>';
+  toast('IG DEMO account and market preflight completed');
+ }catch(err){
+  state.textContent='IG DEMO preflight blocked: '+String(err.message||err);
+  toast('IG DEMO preflight blocked',true);
+ }finally{
+  button.disabled=false;button.textContent='Check IG DEMO Trading Readiness';
+ }
+}
+function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(!ready?.ready){toast(ready?.reason||'Wait for fresh LIVE market data before starting PAPER AI.',true);return}if(await confirmDialog('Start PAPER AI','Begin a simulated-trading test on fresh LIVE prices? No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
 function render(){const s=app.state;if(!s)return;$('status-dot').classList.toggle('active',s.running);$('engine-status').textContent=s.running?'AI ACTIVE':'AI PAUSED';$('version').textContent='v'+s.version;$('about-version').textContent=s.version;$('scan-clock').textContent='Scan '+stamp(s.last_scan_at);const feedExamples=s.feed_diagnostics?.examples||[];$('engine-message').textContent=s.last_scan_error?`SCAN ERROR: ${s.last_scan_error}`:(s.markets.length===0&&feedExamples.length?`LIVE DATA UNAVAILABLE · ${feedExamples.slice(0,2).join(' | ')}`:s.status);$('start').disabled=!!s.running||!s.trading_readiness?.ready||!!s.state_stale;$('start').title=s.trading_readiness?.reason||'Waiting for price feed';$('pause').disabled=!s.running;$('open-count').textContent=s.positions.length;$('market-count').textContent=s.symbols.length+' test markets';$('session-label').textContent=s.markets.find(x=>x.session)?.session||'—';renderDashboard();if(app.page==='markets')renderMarkets();if(app.page==='positions')renderPositions();if(app.page==='decisions')renderDecisions();if(app.page==='trades')renderTrades();if(app.page==='replay')renderReplayList();if(app.page==='performance')renderPerformance();if(app.page==='shadow')renderShadow();if(app.page==='quality')renderQuality();if(app.page==='settings'){if(!document.activeElement?.closest?.('#settings-form'))renderSettings();renderWatchlist()}drawGraphs()}
 function renderDashboard(){let s=app.state,p=s.performance;
  $('metrics').innerHTML=metric('PAPER equity',money(s.equity),'Balance '+money(s.balance))+metric('Unrealized P&L',money(s.unrealized),'Open simulated trades',cls(s.unrealized))+metric('Realized P&L',money(p.pnl),p.trades+' closed trades',cls(p.pnl))+metric('Win rate',num(p.win_rate,1)+'%',`Profit factor ${num(p.pf)}`,p.win_rate>=50?'positive':'gold');
