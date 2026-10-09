@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#080d15"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><title>FX // AI — Mobile</title></head>
 <body>
-<div id="login" class="login-screen"><div class="login-card"><div class="brand-mark">FX <span>//</span> AI</div><h1>Trading Terminal</h1><p>Connect to your PAPER trading engine. Live market data, simulated trades.</p><label for="token">Server access token</label><input type="password" id="token" placeholder="Enter secret token · blank for local PC" autocomplete="off"><button id="connect" class="primary full">Connect securely →</button><p id="login-error" class="error"></p><small>The engine runs on your server, not on your phone. Use HTTPS for remote access.</small></div></div>
+<div id="login" class="login-screen"><div class="login-card"><div class="brand-mark">FX <span>//</span> AI</div><h1>Trading Terminal</h1><p>Connect to your PAPER trading engine. Live market data, simulated trades.</p><label for="token">Server access token</label><input type="password" id="token" placeholder="Enter secret token · blank for local PC" autocomplete="off"><button id="connect" class="primary full">Connect securely →</button><p id="login-status" role="status" aria-live="polite" class="muted">Preparing secure connection…</p><p id="login-error" class="error" role="alert" aria-live="assertive"></p><small>The engine runs on your server, not on your phone. Use HTTPS for remote access.</small></div></div>
 <div id="app" hidden>
  <header class="topbar"><div class="top-brand">FX <b>//</b> AI <span>MOBILE</span></div><div class="status"><span id="status-dot" class="dot"></span><span id="engine-status">CONNECTING</span><span class="pill">PAPER</span></div></header>
  <main class="shell">
@@ -22,4 +22,4 @@
  <div id="more-menu" class="more-menu" hidden><button data-page="decisions">AI Decision Feed</button><button data-page="replay">Trade Replay</button><button data-page="performance">Performance Lab</button><button data-page="shadow">Shadow Lab</button><button data-page="quality">Data Quality & Risk</button></div>
 </div>
 <div id="confirm" class="modal" hidden><div class="modal-box"><h2 id="confirm-title">Confirm</h2><p id="confirm-message"></p><div class="actions"><button id="confirm-cancel" class="soft">Cancel</button><button id="confirm-ok" class="warn">Confirm</button></div></div></div>
-<script src="/app.js" defer></script></body></html>
+<script src="/app.js?v=login-recovery-20261009" defer></script></body></html>
