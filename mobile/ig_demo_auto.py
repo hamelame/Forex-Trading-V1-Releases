@@ -204,7 +204,7 @@ def _broker_vs_paper_price_check(paper, mini):
     if not (Decimal("7500") < ibid < iask < Decimal("20000")):
         raise IGTrialError("IG EUR/USD Mini quote has unexpected pricing units.")
     pmid = (pbid + pask) / 2
-    imid = (ibid + iask) / Decimal("10000")
+    imid = (ibid + iask) / Decimal("20000")
     if abs(imid - pmid) / pmid > Decimal("0.02"):
         raise IGTrialError("IG DEMO price differs materially from PAPER data. AUTO blocked.")
 
