@@ -10,6 +10,7 @@ on:
       - mobile-ig-demo-readonly-20261009
       - mobile-ig-demo-diagnostics-20261009
       - mobile-ig-demo-execution-preflight-20261009
+      - mobile-ig-demo-null-reroute-fix-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
