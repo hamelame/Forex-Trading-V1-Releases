@@ -120,7 +120,9 @@ class FirstIGDemoTradeTests(unittest.TestCase):
             return FakeResponse({"dealReference": data["dealReference"]})
         if method == "GET" and path.startswith("/confirms/"):
             self.assertEqual(req.get_header("Version"), "1")
-            self.assertEqual(path.removeprefix("/confirms/"), self.ref if hasattr(self,"ref") else "CLOSE_REF_123")
+            expected_ref = ("CLOSE_REF_123" if path.endswith("CLOSE_REF_123")
+                            else getattr(self, "ref", "MISSING_REF"))
+            self.assertEqual(path.removeprefix("/confirms/"), expected_ref)
             if path.endswith("CLOSE_REF_123"):
                 return FakeResponse({"dealStatus": "ACCEPTED", "dealId": "DEMO_DEAL_A1"})
             return FakeResponse({"dealStatus": "ACCEPTED", "dealId": "DEMO_DEAL_A1"})
