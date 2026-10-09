@@ -82,7 +82,8 @@ function renderQuality(){
  let details=row('PAPER readiness',freshness,ready.reason||'No scanner results')+
   row('Live market feed',escape((ready.fresh||0)+' / '+(s.symbols?.length||0)+' fresh'),'Required '+(ready.required||3)+' · LIVE only')+
   row('Scan age',escape(ready.last_scan_age_seconds===null?'Never':num(ready.last_scan_age_seconds||0,1)+' sec'),'Free Render may spin down when idle')+
-  row('Feed requests / failures',escape((diag.fresh_markets||0)+' snapshots · '+(diag.failed_fetches||0)+' errors'),'No synthetic prices substituted');
+  row('LIVE provider progress',escape((diag.fetch_attempts||0)+' attempts · '+(diag.inflight||0)+' pending'),(diag.candle_histories||0)+' markets with candle history · '+(diag.failed_fetches||0)+' provider errors')+
+  row('Analysed market snapshots',escape(String(diag.fresh_markets||0)),'No synthetic prices substituted');
  let problems=(diag.examples||[]).map(x=>'<p class="negative">'+escape(x)+'</p>').join('');
  $('quality-list').innerHTML=details+'<p class="feed-summary">'+Object.entries(by).map(([k,v])=>escape(k)+': '+v).join(' · ')+'</p>'+problems+s.markets.map(m=>row(m.symbol,`<span class="${m.feed_status==='LIVE'?'positive':'gold'}">${escape(m.feed_status||'NO DATA')}</span>`,`${escape(m.feed_provider||'—')} · age ${num(m.data_age_seconds||0,0)}s · quality ${num(m.quality||0,0)}%`)).join('');
  $('risk-details').innerHTML=statObject(s.risk,35);
