@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 from mobile.ig_demo import IGDemoError, status as ig_demo_status, check_connection as ig_demo_check
+from mobile.ig_demo_preflight import preview as ig_demo_preflight
 
 # Reuse the credential from the older mobile service without showing it.
 TOKEN = (os.getenv("FX_MOBILE_TOKEN") or os.getenv("MOBILE_ACCESS_TOKEN") or "").strip()
@@ -100,6 +101,19 @@ def headers(resp):
 @app.route("/health")
 def health():
     return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True)
+
+
+@app.route("/api/ig-demo/preflight", methods=["POST"])
+def ig_demo_preflight_view():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(ig_demo_preflight())
+    except IGDemoError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO read-only trading preflight unavailable")
+        return jsonify(error="IG DEMO market preflight unavailable"), 503
 
 
 @app.route("/api/ig-demo/status", methods=["GET"])
