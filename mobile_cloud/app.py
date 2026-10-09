@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 from mobile.ig_demo import IGDemoError, status as ig_demo_status, check_connection as ig_demo_check
 from mobile.ig_demo_preflight import preview as ig_demo_preflight
+from mobile.ig_demo_risk import policy as ig_demo_risk_policy
 from mobile.ig_demo_trial import (
     IGTrialError, status as ig_trial_status, create_first_demo_trade,
     check_first_demo_trade, close_first_demo_trade,
@@ -168,6 +169,14 @@ def ig_demo_trial_close():
     except Exception:
         logging.error("IG DEMO single-order close uncertain")
         return jsonify(error="IG DEMO close needs manual review. Check IG platform."), 503
+
+
+@app.route("/api/ig-demo/risk-policy", methods=["GET"])
+def ig_demo_risk_policy_view():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    # Not a trading endpoint; no network calls, no PAPER engine access.
+    return jsonify(ig_demo_risk_policy())
 
 
 @app.route("/api/ig-demo/preflight", methods=["POST"])
