@@ -105,6 +105,91 @@ class BrokerPreflightTests(unittest.TestCase):
         for secret in (*self.env.values(), "private-cst", "private-xst", "DEMO123"):
             self.assertNotIn(secret, str(result))
 
+    def test_market_search_accepts_slash_pair_and_non_cfd_epic_after_detail_validation(self):
+        """CFD account may use EUR/USD naming and a MINI instrument EPIC."""
+        paths = []
+        def open_ig(req, timeout):
+            path = req.full_url.removeprefix(preflight.DEMO_BASE)
+            paths.append((req.get_method(), path))
+            if path in ("/session", "/accounts", "/positions"):
+                return self.fake_ig(req, timeout)
+            if path == "/markets?searchTerm=EURUSD":
+                return FakeResponse({"markets": []})
+            if path == "/markets?searchTerm=EUR%2FUSD":
+                return FakeResponse({"markets": [{
+                    "epic": "CS.D.EURUSD.MINI.IP",
+                    "instrumentName": "EUR/USD",
+                    # Some IG search entries omit instrumentType entirely.
+                }]})
+            if path == "/markets/CS.D.EURUSD.MINI.IP":
+                return FakeResponse({
+                    "instrument": {
+                        "epic": "CS.D.EURUSD.MINI.IP",
+                        "type": "CURRENCIES", "name": "EUR/USD Mini",
+                        "expiry": "-", "contractSize": "10000",
+                        "stopsLimitsAllowed": True, "valueOfOnePip": "1",
+                    },
+                    "snapshot": {"marketStatus": "TRADEABLE",
+                                 "bid": 1.08, "offer": 1.081, "delayTime": 0},
+                    "dealingRules": {
+                        "minDealSize": {"value": 0.01, "unit": "POINTS"},
+                        "minNormalStopOrLimitDistance": {"value": 4, "unit": "POINTS"},
+                    }
+                })
+            self.fail("Unexpected path: " + path)
+
+        result = preflight.preview(self.env, opener=open_ig)
+        self.assertEqual(result["market_candidates"][0]["epic"], "CS.D.EURUSD.MINI.IP")
+        self.assertEqual(result["market_candidates"][0]["contract_size"], "10000")
+        self.assertEqual(result["market_candidates"][0]["source"], "market search")
+        self.assertEqual(result["search_diagnostics"], [
+            {"term": "EURUSD", "results": 0, "pair_matches": 0},
+            {"term": "EUR/USD", "results": 1, "pair_matches": 1},
+        ])
+        self.assertTrue(result["instrument_verified"])
+        self.assertFalse(result["broker_order_execution_enabled"])
+        self.assertEqual(paths[-1], ("GET", "/markets/CS.D.EURUSD.MINI.IP"))
+        self.assertTrue(all(method == "GET" for method, _ in paths[1:]))
+
+    def test_known_epic_lookup_is_read_only_last_resort(self):
+        """When IG's search catalogue is empty, verify public example EPIC."""
+        def open_ig(req, timeout):
+            path = req.full_url.removeprefix(preflight.DEMO_BASE)
+            if path.startswith("/markets?"):
+                self.assertEqual(req.get_method(), "GET")
+                return FakeResponse({"markets": []})
+            return self.fake_ig(req, timeout)
+        result = preflight.preview(self.env, opener=open_ig)
+        self.assertTrue(result["instrument_verified"])
+        self.assertEqual(result["market_candidates"][0]["source"], "read-only EPIC lookup")
+        self.assertEqual(len(result["search_diagnostics"]), 3)
+        self.assertFalse(result["broker_order_execution_enabled"])
+
+    def test_non_currency_derivative_never_passes_instrument_details(self):
+        def open_ig(req, timeout):
+            path = req.full_url.removeprefix(preflight.DEMO_BASE)
+            if path == "/markets/CS.D.EURUSD.CFD.IP":
+                return FakeResponse({
+                    "instrument": {"epic":"CS.D.EURUSD.CFD.IP",
+                                   "type":"KNOCKOUTS_CURRENCIES", "name":"EUR/USD"},
+                    "snapshot": {"marketStatus": "TRADEABLE"},
+                    "dealingRules": {}
+                })
+            return self.fake_ig(req, timeout)
+        result = preflight.preview(self.env, opener=open_ig)
+        self.assertFalse(result["instrument_verified"])
+        self.assertEqual(result["market_candidates"], [])
+        self.assertFalse(result["broker_order_execution_enabled"])
+
+    def test_rejects_extra_search_terms_or_forged_epics(self):
+        for term in ("XAUUSD", "EUR%26USD", "EUR%2FUSD&apiKey=secret"):
+            with self.subTest(term=term):
+                with self.assertRaises(preflight.IGDemoError):
+                    preflight._read_only_get("/markets?searchTerm="+term,
+                        key="some-key", cst="cst", xst="xst", version=1)
+        self.assertEqual(preflight._search_path("EUR/USD"),
+                         "/markets?searchTerm=EUR%2FUSD")
+
     def test_live_reroute_is_rejected_before_orders_or_market_reads(self):
         def live_login(req, timeout):
             return FakeResponse({
