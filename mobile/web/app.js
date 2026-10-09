@@ -51,7 +51,7 @@ async function connect(){
 async function fetchState(silent=true){if(app.requesting||$('app').hidden)return;app.requesting=true;try{app.state=await api('/api/state');if(!app.touchScrolling&&Date.now()-app.lastScrollAt>1000){const y=window.scrollY,ml=$('markets-list'),mlY=ml?.scrollTop||0;render();if(ml&&mlY)ml.scrollTop=mlY;if(y>10&&window.scrollY<y-8)window.scrollTo(0,y);if(app.page==='markets'&&app.chartSymbol&&Date.now()-app.lastCandleAt>15000)await fetchCandles()}}catch(e){if(!silent)toast(e.message,true);else $('engine-status').textContent='OFFLINE'}finally{app.requesting=false}}
 async function cmd(name,payload={}){try{let result=await api('/api/command/'+name,{method:'POST',body:JSON.stringify(payload)});toast(result.message||'Completed');await fetchState(false)}catch(e){toast(e.message,true)}}
 function confirmDialog(title,message,yes,action='Confirm'){return new Promise(resolve=>{let el=$('confirm');$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-ok').textContent=action;el.hidden=false;const done=answer=>{el.hidden=true;$('confirm-ok').onclick=null;$('confirm-cancel').onclick=null;resolve(answer)};$('confirm-ok').onclick=()=>done(true);$('confirm-cancel').onclick=()=>done(false)})}
-function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay();if(page==='quality')refreshIGDemoStatus();if(page==='ig-demo'){app.igMiniReady=false;fetchIGDemoTrialStatus()}}
+function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay();if(page==='quality')refreshIGDemoStatus();if(page==='ig-demo'){app.igMiniReady=false;fetchIGDemoTrialStatus();fetchIGDemoRiskPolicy()}}
 async function refreshIGDemoStatus(){
  const el=$('ig-demo-details'); if(!el||!app.token)return;
  try{
@@ -79,6 +79,21 @@ async function testIGDemoConnection(){
  finally{button.disabled=false;button.textContent='Test IG DEMO Connection'}
 }
 
+function renderIGDemoRisk(p){
+ const el=$('ig-demo-risk-policy');if(!el)return;
+ const amount=Number(p.indicative_risk_budget);
+ const ready=p.indicative_risk_budget!==null&&Number.isFinite(amount);
+ el.innerHTML=
+  row('IG DEMO max planned risk',escape(String(p.max_planned_risk_pct)+'%'),'Per proposed trade, before extra slippage and costs')+
+  row('Indicative loss budget',escape(ready?amount.toFixed(2)+' '+(p.budget_unit||''):'Awaiting verified broker funds'),'Recomputed from IG balance and available funds; not an order size')+
+  row('Max simultaneous IG positions',escape(String(p.max_open_ig_positions)))+
+  row('IG DEMO automatic orders','<span class="muted">OFF – NOT ARMED</span>','No broker automation until risk conversion, reconciliation and close are validated')+
+  row('Real-money orders','<span class="muted">DISABLED</span>','IG DEMO only');
+}
+async function fetchIGDemoRiskPolicy(){
+ try{const p=await api('/api/ig-demo/risk-policy');renderIGDemoRisk(p)}
+ catch(_){const el=$('ig-demo-risk-policy');if(el)el.textContent='Could not load IG DEMO risk policy.'}
+}
 async function checkIGDemoReadiness(){
  const button=$('ig-demo-preflight'),state=$('ig-demo-live-status'),out=$('ig-demo-live-results');
  if(button.disabled)return;
@@ -87,6 +102,7 @@ async function checkIGDemoReadiness(){
  out.textContent='';
  try{
   const p=await api('/api/ig-demo/preflight',{method:'POST'});
+  if(p.risk_policy)renderIGDemoRisk(p.risk_policy);
   let m=p.market_candidates||[];
   app.igMiniReady=m.some(x=>x.epic==='CS.D.EURUSD.CEEM.IP' &&
     x.type==='CURRENCIES' && x.status==='TRADEABLE' && x.stops_allowed===true);
