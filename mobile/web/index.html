@@ -18,6 +18,12 @@
   <section id="quality" class="page"><div class="panel"><h2>Feed Status</h2><p class="muted">LIVE is market data, never live broker execution.</p><div id="quality-list"></div></div><div class="panel"><h2>IG DEMO – Connection Test</h2><p class="muted">Read-only broker check. No orders, no live account access, no effect on PAPER AI.</p><p id="ig-demo-details" class="muted">Open this tab to check credential setup.</p><button id="ig-demo-check" class="soft" type="button">Test IG DEMO Connection</button></div><div class="panel"><h2>Safety</h2><div id="risk-details"></div></div></section>
   <section id="ig-demo" class="page">
     <div class="panel">
+      <div class="panel-head"><h2>IG DEMO Risk Limits</h2><span class="pill">0.5% MAX</span></div>
+      <p class="muted">Your chosen limit: at most 0.5% of available broker funds/equity per proposed IG DEMO trade, based on loss at broker-side stop. This is not a guaranteed maximum loss: slippage, fees and spreads can increase it. PAPER is separate.</p>
+      <div id="ig-demo-risk-policy">Risk configuration: loading…</div>
+      <p class="muted">IG DEMO AUTO remains disabled until closing via broker API, currency conversion, sizing, order reconciliation, and emergency stop have passed live DEMO checks. This screen does not enable any orders.</p>
+    </div>
+    <div class="panel">
       <div class="panel-head"><h2>IG DEMO Live Test</h2><span class="pill">VIRTUAL FUNDS</span></div>
       <p class="muted">Independent of PAPER AI. This first step verifies your IG CFD account, any existing broker positions, contract sizes, stop-loss rules and market availability. No orders are sent yet.</p>
       <div id="ig-demo-live-status" class="muted">Broker trading is NOT armed. Run preflight before enabling any automated DEMO execution.</div>
@@ -49,4 +55,4 @@
  <div id="more-menu" class="more-menu" hidden><button data-page="decisions">AI Decision Feed</button><button data-page="replay">Trade Replay</button><button data-page="performance">Performance Lab</button><button data-page="shadow">Shadow Lab</button><button data-page="ig-demo">IG DEMO Live Test</button><button data-page="quality">Data Quality & Risk</button></div>
 </div>
 <div id="confirm" class="modal" hidden><div class="modal-box"><h2 id="confirm-title">Confirm</h2><p id="confirm-message"></p><div class="actions"><button id="confirm-cancel" class="soft">Cancel</button><button id="confirm-ok" class="warn">Confirm</button></div></div></div>
-<script src="/app.js?v=ig-demo-first-manual-trial-20261009" defer></script></body></html>
+<script src="/app.js?v=ig-demo-risk-pct-half-20261009" defer></script></body></html>
