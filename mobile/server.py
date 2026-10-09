@@ -237,7 +237,18 @@ class MobileRuntime:
         previous = self.last_scan_completed_at
         self.last_scan_completed_at = time.monotonic()
         try:
-            return bool(self.trading_readiness()["ready"])
+            if not self.trading_readiness()["ready"]:
+                return False
+            # Existing open positions require trustworthy LIVE quotes too,
+            # not merely 3 unrelated healthy markets.
+            for p in self.engine.positions:
+                snap = self.engine.snapshots.get(p.symbol)
+                if snap is None or getattr(snap, "feed_status", "") != "LIVE":
+                    return False
+                age = float(getattr(snap, "data_age_seconds", float("inf")))
+                if not math.isfinite(age) or age > float(self.cfg.get("live_data_delayed_stale_seconds", 1200)):
+                    return False
+            return True
         finally:
             self.last_scan_completed_at = previous
 
