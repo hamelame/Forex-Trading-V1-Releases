@@ -11,6 +11,7 @@ on:
       - mobile-ig-demo-diagnostics-20261009
       - mobile-ig-demo-execution-preflight-20261009
       - mobile-ig-demo-null-reroute-fix-20261009
+      - mobile-ig-eurusd-discovery-fix-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
