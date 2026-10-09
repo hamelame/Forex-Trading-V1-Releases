@@ -22,6 +22,8 @@ from mobile.ig_demo import (
     credentials_ready,
 )
 
+from mobile.ig_demo_risk import policy as demo_risk_policy
+
 _EPIC = re.compile(r"^[A-Za-z0-9._]{6,30}$")
 _MAX_BYTES = 500_000
 
@@ -258,6 +260,10 @@ def preview(environ=None, opener=None):
         "account_currency": str(active.get("currency", ""))[:3],
         "account_balance": _finite_number(balance.get("balance")),
         "account_available": _finite_number(balance.get("available")),
+        "risk_policy": demo_risk_policy(
+            balance.get("balance"), balance.get("available"),
+            active.get("currency"),
+        ),
         "existing_ig_positions": len(open_rows),
         "market": "EURUSD",
         "market_candidates": details,
