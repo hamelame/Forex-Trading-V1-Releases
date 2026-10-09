@@ -367,11 +367,40 @@ def create_first_demo_trade(*, phrase, environ=None, storage_dir=None, opener=No
         )
         instrument = raw.get("instrument", {})
         snap = raw.get("snapshot", {})
+        rules = raw.get("dealingRules", {})
         if (not isinstance(instrument, dict) or instrument.get("epic") != MINI_EPIC
-                or instrument.get("type") != "CURRENCIES" or
-                not isinstance(snap, dict) or snap.get("marketStatus") != "TRADEABLE"
-                or snap.get("delayTime") != 0):
-            raise IGTrialError("IG DEMO mini market is no longer safely tradeable.")
+                or not isinstance(snap, dict) or not isinstance(rules, dict)):
+            raise IGTrialError("IG DEMO MINI market details changed; blocked.")
+        currencies = instrument.get("currencies")
+        if not isinstance(currencies, list):
+            raise IGTrialError("IG DEMO MINI currency data missing; blocked.")
+        fresh = {
+            "epic": MINI_EPIC,
+            "type": instrument.get("type"),
+            "unit": instrument.get("unit"),
+            "status": snap.get("marketStatus"),
+            "stops_allowed": instrument.get("stopsLimitsAllowed") is True,
+            "expiry": instrument.get("expiry"),
+            "market_order_preference": rules.get("marketOrderPreference"),
+            "delay_minutes": snap.get("delayTime"),
+            "contract_size": instrument.get("contractSize"),
+            "value_of_one_pip": instrument.get("valueOfOnePip"),
+            "minimum_deal_size": rules.get("minDealSize"),
+            "minimum_stop": rules.get("minNormalStopOrLimitDistance"),
+            "bid": snap.get("bid"),
+            "offer": snap.get("offer"),
+            "currencies": [
+                str(row.get("code", "")) for row in currencies
+                if isinstance(row, dict)
+            ],
+        }
+        # Recompute the entire risk gate with FRESH broker data, not the
+        # previous result: quotes, costs and stop rules may change at any time.
+        fresh_currency, _ = _validate_preflight({
+            **p, "market_candidates": [fresh]
+        })
+        if fresh_currency != currency:
+            raise IGTrialError("IG DEMO Mini settlement currency changed; blocked.")
         new_ref = "FXD-" + uuid.uuid4().hex[:24]
         record = {
             "environment": "DEMO", "stage": "PENDING_SUBMISSION",
