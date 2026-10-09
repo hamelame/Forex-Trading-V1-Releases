@@ -233,8 +233,25 @@ def _request(method, path, *, key, cst, xst, payload=None, opener=None):
         "Content-Type": "application/json",
         "Version": "2" if method == "POST" else "1",
     }
+    # IG Labs FAQ: some HTTP clients/gateways reject DELETE requests with
+    # JSON bodies. Closing OTC positions uses *POST* to the exact same DEMO
+    # endpoint with the IG-supported override header "_method: DELETE".
+    # Keep the *semantic* operation named DELETE for our allowlist and API
+    # logic, but use POST on the wire ONLY for confirmed closes.
+    wire_method = method
+    if method == "DELETE":
+        if (not isinstance(payload, dict)
+                or set(payload) != {"dealId", "direction", "size", "orderType"}
+                or not isinstance(payload.get("dealId"), str)
+                or not _DEAL_ID.fullmatch(payload["dealId"])
+                or payload.get("direction") != "SELL"
+                or payload.get("size") != TRIAL_SIZE
+                or payload.get("orderType") != "MARKET"):
+            raise IGTrialError("IG DEMO close payload failed strict trial validation.")
+        headers["_method"] = "DELETE"
+        wire_method = "POST"
     data = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode() if payload else None
-    req = urllib.request.Request(DEMO_BASE + path, data=data, method=method, headers=headers)
+    req = urllib.request.Request(DEMO_BASE + path, data=data, method=wire_method, headers=headers)
     try:
         return _opener(req, timeout=10, open_func=opener)
     except urllib.error.HTTPError as exc:
@@ -466,7 +483,9 @@ def check_first_demo_trade(*, environ=None, storage_dir=None, opener=None):
             if record["stage"] in ("CLOSE_PENDING", "CLOSE_ACKNOWLEDGED", "CLOSE_REJECTED"):
                 if p is None:
                     record["stage"] = "CLOSED"
-                    record["last_note"] = "IG DEMO confirms the trial position is no longer open."
+                    record["last_note"] = ("IG DEMO confirms no open trial position. "
+                                           "It may have been closed manually in IG; "
+                                           "do not repeat this one-shot trade.")
                 else:
                     record["last_note"] = "IG trial still open; verify the close in IG DEMO."
             elif p is not None:
