@@ -221,16 +221,26 @@ class LiveMarketFeed:
         while the interface remains responsive.
         """
         now=time.time()
+        # Reserve tasks while holding the lock, but NEVER submit or attach
+        # callbacks inside it: Future.add_done_callback calls synchronously
+        # when a fast/failed request already completed, otherwise deadlocking
+        # _download_finished on the same non-reentrant lock.
         with self._inflight_lock:
             due=[s for s in self.symbols
                  if s not in self._inflight and now-self._last_fetch.get(s,0)>=self.refresh_seconds]
             # Bootstrap empty symbols first, then the stalest cached symbols.
             due.sort(key=lambda s:(1 if self.history[s] else 0,self._last_fetch.get(s,0)))
-            for symbol in due[:self.submit_batch]:
+            scheduled=due[:self.submit_batch]
+            for symbol in scheduled:
                 self._inflight.add(symbol)
                 self._last_fetch[symbol]=now
+        for symbol in scheduled:
+            try:
                 future=self._executor.submit(self._refresh_symbol,symbol,True)
                 future.add_done_callback(lambda _f,s=symbol:self._download_finished(s))
+            except Exception as exc:
+                self._last_error[symbol]=f"Fetch scheduling failed: {exc}"
+                self._download_finished(symbol)
 
     def _download_finished(self,symbol):
         with self._inflight_lock:
