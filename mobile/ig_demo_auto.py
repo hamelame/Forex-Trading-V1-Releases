@@ -121,6 +121,7 @@ def _initial():
         "reconciled_close_by_api": False,
         "opening_risk_budget_nok": None, "estimated_risk_buffer_nok": None,
         "initial_balance_nok": None, "note": "IG DEMO AUTO is OFF; PAPER remains separate.",
+        "last_start_error": None, "last_start_error_at": None,
         "updated_at": _now(),
     }
 
@@ -131,6 +132,7 @@ def _state_public(s):
         "max_attempts_today", "paper_direction", "broker_stop_verified",
         "reconciled_close_by_api", "opening_risk_budget_nok",
         "estimated_risk_buffer_nok", "note", "updated_at",
+        "last_start_error", "last_start_error_at",
     )
     result = {k: s.get(k) for k in fields}
     result["risk_percent"] = 0.5
@@ -310,6 +312,22 @@ class IGDemoAuto:
         with self.lock:
             return _state_public(self.state)
 
+    def record_start_rejection(self, message):
+        """Persist a safe, visible broker start rejection for iPhone users.
+
+        Never changes order state, size, risk policy or arming state. The
+        frontend reads the field through the existing auth-protected status
+        endpoint, rather than a toast outside the current scroll viewport.
+        Caller supplies our own approved IGTrialError/IGDemoError text, not
+        arbitrary broker response bodies or credentials.
+        """
+        with self.lock:
+            if self.state.get("armed"):
+                return
+            self.state["last_start_error"] = str(message)[:220]
+            self.state["last_start_error_at"] = _now()
+            self._persist()
+
     def start(self, phrase):
         if phrase != START_PHRASE:
             raise IGTrialError("Explicit IG DEMO AUTO 0.5% start confirmation required.")
@@ -346,6 +364,8 @@ class IGDemoAuto:
             st["initial_balance_nok"] = p.get("account_balance")
             st["stage"] = "WATCHING"
             st["armed"] = True
+            st["last_start_error"] = None
+            st["last_start_error_at"] = None
             st["note"] = (
                 "IG DEMO AUTO armed for NEW EURUSD PAPER entries only. "
                 "0.1 Mini; stop 20 points; 0.5% risk gate. No real funds."
