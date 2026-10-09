@@ -18,14 +18,29 @@
   <section id="quality" class="page"><div class="panel"><h2>Feed Status</h2><p class="muted">LIVE is market data, never live broker execution.</p><div id="quality-list"></div></div><div class="panel"><h2>IG DEMO – Connection Test</h2><p class="muted">Read-only broker check. No orders, no live account access, no effect on PAPER AI.</p><p id="ig-demo-details" class="muted">Open this tab to check credential setup.</p><button id="ig-demo-check" class="soft" type="button">Test IG DEMO Connection</button></div><div class="panel"><h2>Safety</h2><div id="risk-details"></div></div></section>
   <section id="ig-demo" class="page">
     <div class="panel">
+      <div class="panel-head"><h2>IG DEMO AUTO · Virtual Money</h2><span class="pill">0.5% RISK CAP</span></div>
+      <p class="muted">First staged AI-to-IG rollout. Mirrors ONLY new PAPER AI BUY entries in EUR/USD Mini; fixed 0.1 Mini, one position at a time. Requires fresh public LIVE candles plus fresh IG prices; stop-loss 20 IG points and take-profit 40 points at the broker. No real account access.</p>
+      <div id="ig-demo-auto-stage" class="muted">IG DEMO AUTO status loading…</div>
+      <div id="ig-demo-auto-note" class="muted"></div>
+      <div id="ig-demo-auto-stats"></div>
+      <div class="actions">
+        <button id="ig-demo-auto-start" class="primary full" type="button" disabled>Start IG DEMO AUTO · 0.5%</button>
+      </div>
+      <div class="actions">
+        <button id="ig-demo-auto-stop" class="warn" type="button" disabled>Stop NEW IG DEMO Trades</button>
+        <button id="ig-demo-auto-refresh" class="soft" type="button">Refresh IG AUTO Status</button>
+      </div>
+      <p class="muted">Safety rollout: maximum 2 entry attempts per UTC day, only one new trade per deliberate start. Existing positions stay protected at IG when entry automation is stopped. After server restart AUTO requires rearming. If broker confirmation/closure is uncertain it stops and requires manual IG review. Normal stops can slip.</p>
+    </div>
+    <div class="panel">
       <div class="panel-head"><h2>IG DEMO Risk Limits</h2><span class="pill">0.5% MAX</span></div>
       <p class="muted">Your chosen limit: at most 0.5% of available broker funds/equity per proposed IG DEMO trade, based on loss at broker-side stop. This is not a guaranteed maximum loss: slippage, fees and spreads can increase it. PAPER is separate.</p>
       <div id="ig-demo-risk-policy">Risk configuration: loading…</div>
-      <p class="muted">IG DEMO AUTO remains disabled until closing via broker API, currency conversion, sizing, order reconciliation, and emergency stop have passed live DEMO checks. This screen does not enable any orders.</p>
+      <p class="muted">IG DEMO AUTO is a separately armed, limited rollout. No unverified position sizes: only the already-confirmed EUR/USD Mini contract and smallest 0.1 size are eligible. The first live-demo API closure still needs forward validation.</p>
     </div>
     <div class="panel">
       <div class="panel-head"><h2>IG DEMO Live Test</h2><span class="pill">VIRTUAL FUNDS</span></div>
-      <p class="muted">Independent of PAPER AI. This first step verifies your IG CFD account, any existing broker positions, contract sizes, stop-loss rules and market availability. No orders are sent yet.</p>
+      <p class="muted">IG DEMO CFD account, verified broker instruments, live quotes, existing broker positions, stop-distance rules and available virtual funds. This readiness button never sends orders.</p>
       <div id="ig-demo-live-status" class="muted">Broker trading is NOT armed. Run preflight before enabling any automated DEMO execution.</div>
       <button id="ig-demo-preflight" class="primary full" type="button">Check IG DEMO Trading Readiness</button>
       <div id="ig-demo-live-results"></div>
@@ -46,7 +61,7 @@
     </div>
     <div class="panel">
       <h2>Broker safety</h2>
-      <p class="muted">Hard-coded IG DEMO URL only, separate balances from PAPER. No live account orders. Demo AUTO trading remains OFF. The one-shot manual test uses broker quotes and contract rules, not PAPER lot sizes. Confirmed trades are reconciled against IG and durable journaled.</p>
+      <p class="muted">Broker DEMO URL is fixed, and PAPER balances/trades remain separate. IG AUTO can start only after explicit confirmation. It cannot resume on its own after restart; no real-money endpoints, and each trade records a durable intent before sending a request. Stop halts new entries, not existing IG positions.</p>
     </div>
   </section>
   <section id="settings" class="page"><div class="panel"><h2>Mobile Trading Settings</h2><p class="muted">Protected PAPER-only limits. Saved values apply at next scan; capital at next new session.</p><form id="settings-form"><div id="settings-fields"></div><button class="primary full" type="submit">Save & Apply</button></form></div><div class="panel"><div class="panel-head"><h2>Manual Watchlist</h2><span class="pill">MAX 25</span></div><p class="muted">Only used in MANUAL selection mode. Search and tap to add or remove symbols.</p><input id="watch-search" type="search" class="full" placeholder="Find symbol…"><p id="watch-selected" class="muted"></p><div id="watch-list" class="market-list" style="max-height:270px"></div><button class="primary full" id="watch-save">Save Manual Watchlist</button></div><div class="panel"><h2>Session Control</h2><p class="muted">Reset only when paused with no open positions. This resets visible session results, not archived learning records.</p><button class="soft" id="new-session">New PAPER Session</button></div><div class="panel"><h2>Connection</h2><button class="soft" id="disconnect">Disconnect this Phone</button><p class="muted">Version <span id="about-version">—</span> · PAPER ONLY · No broker orders.</p></div></section>
@@ -55,4 +70,4 @@
  <div id="more-menu" class="more-menu" hidden><button data-page="decisions">AI Decision Feed</button><button data-page="replay">Trade Replay</button><button data-page="performance">Performance Lab</button><button data-page="shadow">Shadow Lab</button><button data-page="ig-demo">IG DEMO Live Test</button><button data-page="quality">Data Quality & Risk</button></div>
 </div>
 <div id="confirm" class="modal" hidden><div class="modal-box"><h2 id="confirm-title">Confirm</h2><p id="confirm-message"></p><div class="actions"><button id="confirm-cancel" class="soft">Cancel</button><button id="confirm-ok" class="warn">Confirm</button></div></div></div>
-<script src="/app.js?v=ig-demo-risk-pct-half-20261009" defer></script></body></html>
+<script src="/app.js?v=ig-demo-auto-staged-20261009" defer></script></body></html>
