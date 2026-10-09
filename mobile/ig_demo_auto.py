@@ -187,6 +187,28 @@ def _candidate(snapshot, excluded):
     return None
 
 
+def _broker_vs_paper_price_check(paper, mini):
+    """Check Yahoo signal and real IG DEMO quote are reasonably aligned.
+
+    IG quotes this EUR/USD CFD in 1/10000 display points (e.g. 11201 means
+    1.1201). Avoid firing a mirrored signal on a divergent/delayed feed.
+    This sanity check is specific to this verified EPIC, not a generic
+    conversion routine for other markets.
+    """
+    pbid, pask = _number(paper.get("eurusd_bid")), _number(paper.get("eurusd_ask"))
+    ibid, iask = _number(mini.get("bid")), _number(mini.get("offer"))
+    if None in (pbid, pask, ibid, iask):
+        raise IGTrialError("IG AUTO quote comparison unavailable.")
+    if not (Decimal("0.75") < pbid <= pask < Decimal("2.00")):
+        raise IGTrialError("PAPER EURUSD price is outside expected currency scale.")
+    if not (Decimal("7500") < ibid < iask < Decimal("20000")):
+        raise IGTrialError("IG EUR/USD Mini quote has unexpected pricing units.")
+    pmid = (pbid + pask) / 2
+    imid = (ibid + iask) / Decimal("10000")
+    if abs(imid - pmid) / pmid > Decimal("0.02"):
+        raise IGTrialError("IG DEMO price differs materially from PAPER data. AUTO blocked.")
+
+
 def _position(rows, deal_id, side):
     for row in rows:
         if not isinstance(row, dict):
@@ -432,6 +454,7 @@ class IGDemoAuto:
         }
         fresh = {**p, "market_candidates": [raw]}
         fresh_budget, fresh_planned = _safe_risk(fresh)
+        _broker_vs_paper_price_check(still, raw)
         if fresh_budget < planned or fresh_planned > budget:
             raise IGTrialError("IG DEMO risk changed since initial verification.")
         reference = "FXA-" + uuid.uuid4().hex[:24]
@@ -558,6 +581,43 @@ class IGDemoAuto:
                 "IG DEMO broker reconciliation failed unexpectedly; check IG platform.",
                 stage="REVIEW_REQUIRED"
             )
+
+    def reconcile(self):
+        """Explicit READ-ONLY broker check, never retries a broker order."""
+        with self.lock:
+            st = self.state
+            if st.get("stage") not in (
+                "REVIEW_REQUIRED", "OPEN", "CLOSE_PENDING", "ORDER_PENDING",
+            ):
+                return _state_public(st)
+            key, cst, xst, _ = _login()
+            rows = _trial_positions(key, cst, xst)
+            deal_id = st.get("deal_id")
+            side = st.get("paper_direction")
+            if not isinstance(deal_id, str) or not _DEAL_ID.fullmatch(deal_id):
+                st["armed"] = False
+                st["stage"] = "REVIEW_REQUIRED"
+                st["note"] = (
+                    "IG DEMO trade ID unknown. Read-only refresh cannot safely "
+                    "associate any open broker position; check IG manually."
+                )
+                self._persist()
+                return _state_public(st)
+            pos = _position(rows, deal_id, side)
+            if pos is None:
+                st["armed"] = False
+                st["stage"] = "CLOSED"
+                st["note"] = "IG confirms known DEMO deal ID is no longer open."
+            else:
+                st["armed"] = False
+                st["stage"] = "REVIEW_REQUIRED"
+                st["broker_stop_verified"] = _stops_verified(pos)
+                st["note"] = (
+                    "IG still has this DEMO position open. Check its stop/target "
+                    "and close in IG if required. AUTO entries remain OFF."
+                )
+            self._persist()
+            return _state_public(st)
 
     def _loop(self):
         while not self.closed:
