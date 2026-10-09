@@ -202,8 +202,10 @@ class _RejectRedirect(urllib.request.HTTPRedirectHandler):
         raise IGTrialError("IG DEMO returned a redirect; broker orders blocked.")
 
 
-def _opener(req, timeout=10):
-    with urllib.request.build_opener(_RejectRedirect()).open(req, timeout=timeout) as response:
+def _opener(req, timeout=10, open_func=None):
+    # Test transports implement the same callable(req, timeout) contract.
+    opener = open_func or urllib.request.build_opener(_RejectRedirect()).open
+    with opener(req, timeout=timeout) as response:
         body = response.read(20_001)
         if len(body) > 20_000:
             raise IGTrialError("IG DEMO broker response was too large.")
@@ -234,7 +236,7 @@ def _request(method, path, *, key, cst, xst, payload=None, opener=None):
     data = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode() if payload else None
     req = urllib.request.Request(DEMO_BASE + path, data=data, method=method, headers=headers)
     try:
-        return (opener or _opener)(req, timeout=10)
+        return _opener(req, timeout=10, open_func=opener)
     except urllib.error.HTTPError as exc:
         raise IGTrialError(_safe_ig_http_error(exc)) from None
     except (urllib.error.URLError, TimeoutError, OSError):
@@ -420,7 +422,8 @@ def check_first_demo_trade(*, environ=None, storage_dir=None, opener=None):
         if record is None:
             return _safe_status(None)
         if record.get("stage") not in ("AWAITING_CONFIRMATION", "PENDING_RECONCILIATION",
-                                      "STOP_UNVERIFIED", "OPEN"):
+                                      "STOP_UNVERIFIED", "OPEN", "CLOSE_PENDING",
+                                      "CLOSE_ACKNOWLEDGED", "CLOSE_REJECTED"):
             return _safe_status(record)
         env = os.environ if environ is None else environ
         key, cst, xst, account_id = _login(env, opener=opener)
@@ -431,7 +434,13 @@ def check_first_demo_trade(*, environ=None, storage_dir=None, opener=None):
         else:
             rows = _trial_positions(key, cst, xst, opener=opener)
             p = _get_trial_position(rows, record["deal_id"])
-            if p is not None:
+            if record["stage"] in ("CLOSE_PENDING", "CLOSE_ACKNOWLEDGED", "CLOSE_REJECTED"):
+                if p is None:
+                    record["stage"] = "CLOSED"
+                    record["last_note"] = "IG DEMO confirms the trial position is no longer open."
+                else:
+                    record["last_note"] = "IG trial still open; verify the close in IG DEMO."
+            elif p is not None:
                 stop = p.get("stopLevel")
                 record["broker_stop_verified"] = type(stop) in (int, float) and math.isfinite(stop)
                 record["stage"] = "OPEN" if record["broker_stop_verified"] else "STOP_UNVERIFIED"
