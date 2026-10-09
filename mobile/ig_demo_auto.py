@@ -609,13 +609,21 @@ class IGDemoAuto:
                 st["stage"] = "CLOSED"
                 st["note"] = "IG confirms known DEMO deal ID is no longer open."
             else:
-                st["armed"] = False
-                st["stage"] = "REVIEW_REQUIRED"
                 st["broker_stop_verified"] = _stops_verified(pos)
-                st["note"] = (
-                    "IG still has this DEMO position open. Check its stop/target "
-                    "and close in IG if required. AUTO entries remain OFF."
-                )
+                if st["stage"] == "OPEN" and st["broker_stop_verified"]:
+                    # A normal verification must NEVER unexpectedly stop
+                    # ongoing broker-position monitoring or arm new entries.
+                    st["note"] = (
+                        "IG DEMO confirms the known position and both protective "
+                        "broker-side levels. Monitoring continues."
+                    )
+                else:
+                    st["armed"] = False
+                    st["stage"] = "REVIEW_REQUIRED"
+                    st["note"] = (
+                        "IG still has this DEMO position open. Check its stop/target "
+                        "and close in IG if required. AUTO entries remain OFF."
+                    )
             self._persist()
             return _state_public(st)
 
