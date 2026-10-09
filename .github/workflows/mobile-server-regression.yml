@@ -6,6 +6,7 @@ on:
       - mobile-v2926-paper-trading-test-20261009
       - mobile-v2926-feed-hang-debug-20261009
       - mobile-v2926-postfork-worker-20261009
+      - mobile-v2926-247-persistence-prep-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
