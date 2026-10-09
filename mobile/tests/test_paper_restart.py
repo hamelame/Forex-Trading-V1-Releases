@@ -81,6 +81,9 @@ class PaperRestartTests(unittest.TestCase):
             self.assertFalse(e.enabled, "No automatic execution before live quote preflight")
             self.assertEqual(len(second.db.load_positions()), 1)
             # A valid feed permits the same no-reset resume performed by the scanner.
+            self.assertFalse(second.trading_readiness_after_scan(),
+                             "Open PAPER positions must not auto-resume without their own fresh prices")
+            e.snapshots["EURUSD"] = SimpleNamespace(feed_status="LIVE", data_age_seconds=10)
             self.assertTrue(second.trading_readiness_after_scan())
             e.set_enabled(True, reset_on_start=False)
             second.auto_resume_pending = False
