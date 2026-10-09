@@ -104,9 +104,15 @@ def preview(environ=None, opener=None):
     if not cst or not xst:
         raise IGDemoError("IG DEMO authentication tokens are missing.")
 
-    # Fail closed if the broker does not explicitly say DEMO CFD.
-    if login.get("reroutingEnvironment") != "DEMO":
-        raise IGDemoError("IG did not confirm DEMO environment. Broker execution is blocked.")
+    # The login request is hard-pinned to demo-api.ig.com. IG's v2
+    # session may return reroutingEnvironment=null (meaning no redirect),
+    # even on DEMO. A missing/null redirect is therefore valid on this
+    # DEMO host. NEVER follow an explicit LIVE, TEST or UAT redirect.
+    # Account type, dealing privileges and current IG CFD account are
+    # verified independently below. No order execution exists here.
+    reroute = login.get("reroutingEnvironment")
+    if reroute not in (None, "DEMO"):
+        raise IGDemoError("IG requested a non-DEMO environment. Broker execution is blocked.")
     if login.get("accountType") != "CFD":
         raise IGDemoError("Current IG DEMO account is not a CFD account.")
     if login.get("dealingEnabled") is not True:
