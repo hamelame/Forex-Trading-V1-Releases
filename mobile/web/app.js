@@ -2,7 +2,7 @@
 const $=id=>document.getElementById(id);
 const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','settings'];
 const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality',settings:'Settings'};
-const app={token:sessionStorage.getItem('fx_token')||'',state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null};
+const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v,n=2)=>(Number.isFinite(Number(v))?Number(v).toLocaleString('en-US',{minimumFractionDigits:n,maximumFractionDigits:n}):'—');
 const money=v=>`${Number(v)<0?'-':''}$${num(Math.abs(Number(v)),2)}`;
@@ -14,8 +14,40 @@ const kv=(k,v)=>`<div class="stat-field"><small>${escape(k)}</small><strong>${es
 const metric=(label,value,sub='',color='')=>`<div class="metric"><label>${escape(label)}</label><strong class="${color}">${escape(value)}</strong><small>${escape(sub)}</small></div>`;
 function toast(message,error=false){const el=$('notice');el.className=error?'error':'';el.textContent=message;clearTimeout(app.noticeTimer);app.noticeTimer=setTimeout(()=>{el.textContent=''},6500)}
 async function api(path,options={}){let response=await fetch(path,{...options,headers:{'Authorization':`Bearer ${app.token}`,...(options.body?{'Content-Type':'application/json'}:{})},cache:'no-store'});let data;try{data=await response.json()}catch{throw Error(`Server responded ${response.status}`)}if(!response.ok){if(response.status===401)logout();throw Error(data.error||`HTTP ${response.status}`)}return data}
-function logout(){app.token='';sessionStorage.removeItem('fx_token');$('app').hidden=true;$('login').hidden=false}
-async function connect(){app.token=$('token').value.trim();$('connect').disabled=true;$('login-error').textContent='';try{app.state=await api('/api/state');sessionStorage.setItem('fx_token',app.token);$('login').hidden=true;$('app').hidden=false;initPage();render()}catch(e){$('login-error').textContent=e.message}finally{$('connect').disabled=false}}
+function logout(){app.token='';try{sessionStorage.removeItem('fx_token')}catch(_){}$('app').hidden=true;$('login').hidden=false}
+async function connect(){
+ const button=$('connect'), message=$('login-status'), error=$('login-error');
+ if(button.disabled)return;
+ const token=$('token').value.trim();
+ error.textContent='';
+ if(!token){error.textContent='Enter the secret token saved in Render.';return}
+ app.token=token;
+ button.disabled=true;
+ button.textContent='Connecting…';
+ message.textContent='Checking whether the cloud server is awake…';
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),95000);
+ try{
+   const health=await fetch('/health',{signal:controller.signal,cache:'no-store'});
+   if(!health.ok)throw new Error('Cloud server unavailable (HTTP '+health.status+'). Please retry.');
+   message.textContent='Server online. Verifying access token…';
+   app.state=await api('/api/state',{signal:controller.signal});
+   try{sessionStorage.setItem('fx_token',app.token)}catch(_){}
+   $('login').hidden=true;
+   $('app').hidden=false;
+   if(!app.initialized){initPage();app.initialized=true}
+   render();
+ }catch(e){
+   message.textContent='Ready to try again.';
+   error.textContent=e?.name==='AbortError'
+     ? 'The server took too long to respond. Tap Connect again.'
+     : (e?.message||'Could not connect to the server. Try again.');
+ }finally{
+   clearTimeout(timeout);
+   button.disabled=false;
+   button.textContent='Connect securely →';
+ }
+}
 async function fetchState(silent=true){if(app.requesting||$('app').hidden)return;app.requesting=true;try{app.state=await api('/api/state');render();if(app.page==='markets'&&app.chartSymbol&&Date.now()-app.lastCandleAt>15000)await fetchCandles()}catch(e){if(!silent)toast(e.message,true);else $('engine-status').textContent='OFFLINE'}finally{app.requesting=false}}
 async function cmd(name,payload={}){try{let result=await api('/api/command/'+name,{method:'POST',body:JSON.stringify(payload)});toast(result.message||'Completed');await fetchState(false)}catch(e){toast(e.message,true)}}
 function confirmDialog(title,message,yes,action='Confirm'){return new Promise(resolve=>{let el=$('confirm');$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-ok').textContent=action;el.hidden=false;const done=answer=>{el.hidden=true;$('confirm-ok').onclick=null;$('confirm-cancel').onclick=null;resolve(answer)};$('confirm-ok').onclick=()=>done(true);$('confirm-cancel').onclick=()=>done(false)})}
@@ -56,4 +88,8 @@ function drawCandles(el,candles,markers=null,tradeSide='BUY'){let c=setupCanvas(
  if(markers){let met=markers||{};let levels=[['entry', '#e7bd56'],['exit','#a6b6cf'],['initial_stop','#f36d79'],['initial_target','#43d2a2'],['final_stop','#f9b96b']];for(let [key,color]of levels){let v=Number(met[key]??met[key+'_price']);if(!Number.isFinite(v)||v<lo||v>hi)continue;let yy=y(v);ctx.setLineDash([4,3]);ctx.strokeStyle=color;ctx.beginPath();ctx.moveTo(12,yy);ctx.lineTo(w-40,yy);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=color;ctx.font='10px system-ui';ctx.fillText(({entry:tradeSide+' ENTRY',exit:(tradeSide==='BUY'?'SELL':'BUY')+' EXIT',initial_stop:'SL',initial_target:'TP',final_stop:'FINAL SL'}[key]||key),17,Math.max(13,yy-3))}
  let epoch=t=>{let a=Date.parse(t);return Number.isFinite(a)?a/1000:null};let markersToDraw=[['opened_at',markers.entry,tradeSide+' ENTRY',tradeSide==='BUY'?'#43d2a2':'#f36d79'],['closed_at',markers.exit,(tradeSide==='BUY'?'SELL':'BUY')+' EXIT','#e7bd56']];for(let [key,price,label,color]of markersToDraw){let ts=epoch(markers[key]);if(!ts||!Number.isFinite(Number(price)))continue;let i=data.reduce((best,x,idx)=>Math.abs(Number(x.ts)-ts)<Math.abs(Number(data[best].ts)-ts)?idx:best,0),xx=x(i),yy=y(Number(price));ctx.strokeStyle=color;ctx.lineWidth=2;ctx.strokeRect(xx-cw/2-3,12,cw+6,h-40);ctx.fillStyle=color;ctx.beginPath();ctx.arc(xx,yy,5.5,0,Math.PI*2);ctx.fill();ctx.fillText(label,Math.max(10,Math.min(w-115,xx+8)),Math.max(15,Math.min(h-16,yy-10)))}}
 }
-$('connect').onclick=connect;$('token').onkeydown=e=>{if(e.key==='Enter')connect()};if(app.token){$('token').value=app.token;connect()}setInterval(()=>{if(!$('app').hidden)fetchState()},5000);
+$('connect').onclick=connect;
+$('token').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connect()}};
+$('login-status').textContent='Login ready. Enter your token and tap Connect.';
+if(app.token){$('token').value=app.token;connect()}
+setInterval(()=>{if(!$('app').hidden)fetchState()},5000);
