@@ -20,6 +20,10 @@ if str(ROOT) not in sys.path:
 from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 from mobile.ig_demo import IGDemoError, status as ig_demo_status, check_connection as ig_demo_check
 from mobile.ig_demo_preflight import preview as ig_demo_preflight
+from mobile.ig_demo_trial import (
+    IGTrialError, status as ig_trial_status, create_first_demo_trade,
+    check_first_demo_trade, close_first_demo_trade,
+)
 
 # Reuse the credential from the older mobile service without showing it.
 TOKEN = (os.getenv("FX_MOBILE_TOKEN") or os.getenv("MOBILE_ACCESS_TOKEN") or "").strip()
@@ -101,6 +105,69 @@ def headers(resp):
 @app.route("/health")
 def health():
     return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True)
+
+
+
+@app.route("/api/ig-demo/trial/status", methods=["GET"])
+def ig_demo_trial_status():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(ig_trial_status())
+    except IGTrialError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO trial local status unavailable")
+        return jsonify(error="IG DEMO trial unavailable"), 503
+
+
+@app.route("/api/ig-demo/trial/open", methods=["POST"])
+def ig_demo_trial_open():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or set(values) != {"confirm"}:
+        return jsonify(error="Explicit DEMO trade confirmation required"), 400
+    try:
+        return jsonify(create_first_demo_trade(phrase=values["confirm"]))
+    except IGTrialError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO single-order trial blocked on unexpected error")
+        return jsonify(error="IG DEMO test order needs manual review. No automatic retry."), 503
+
+
+@app.route("/api/ig-demo/trial/refresh", methods=["POST"])
+def ig_demo_trial_refresh():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(check_first_demo_trade())
+    except IGTrialError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO trial reconciliation unavailable")
+        return jsonify(error="IG DEMO trial reconciliation unavailable"), 503
+
+
+@app.route("/api/ig-demo/trial/close", methods=["POST"])
+def ig_demo_trial_close():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or set(values) != {"confirm"}:
+        return jsonify(error="Explicit DEMO close confirmation required"), 400
+    try:
+        return jsonify(close_first_demo_trade(phrase=values["confirm"]))
+    except IGTrialError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO single-order close uncertain")
+        return jsonify(error="IG DEMO close needs manual review. Check IG platform."), 503
 
 
 @app.route("/api/ig-demo/preflight", methods=["POST"])
