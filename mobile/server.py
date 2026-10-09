@@ -91,6 +91,19 @@ class MobileRuntime:
         self.shutdown = threading.Event()
         self.config_path = Path(config_path or os.getenv("FX_MOBILE_CONFIG", str(ROOT / "config.json")))
         self.cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
+        # Mobile-only staged PAPER test universe: bounded startup work on the
+        # free Render instance. Never rewrite the PC config or strategy.
+        self.full_symbol_count = len(self.cfg["symbols"])
+        test_symbols = (
+            "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD",
+            "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "XAUUSD", "XAGUSD",
+            "BTCUSD", "ETHUSD",
+        )
+        self.staged_paper_test = str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE" and os.getenv("FX_MOBILE_TEST_FULL_UNIVERSE", "0") != "1"
+        if self.staged_paper_test:
+            self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]
+            if not self.cfg["symbols"]:
+                raise RuntimeError("No staged PAPER test markets found in market configuration")
         # Restore only previously validated mutable user controls, not strategy internals.
         self.settings_path = Path(os.getenv("FX_MOBILE_SETTINGS", str(ROOT / "data" / "mobile_settings.json")))
         if self.settings_path.is_file():
@@ -119,6 +132,7 @@ class MobileRuntime:
         self._learning_at = 0.0
         self.last_scan_at = None
         self.last_scan_error = None
+        self.last_scan_completed_at = None
         self._last_feed_warning = 0.0
         self.started_at = utcnow()
         self.worker = None
@@ -140,6 +154,7 @@ class MobileRuntime:
                 with self.lock:
                     self.engine.scan()
                     self.last_scan_at = utcnow()
+                    self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
                     if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
                         self._last_feed_warning = time.monotonic()
@@ -154,6 +169,32 @@ class MobileRuntime:
             delay = (self.cfg.get("scan_interval_seconds", 2) if self.engine.enabled
                      else self.cfg.get("paused_scan_interval_seconds", 4))
             self.shutdown.wait(max(0.2, float(delay) - (time.monotonic() - begin)))
+
+    def trading_readiness(self):
+        """Called while engine lock is held; conservatively fail closed."""
+        if str(self.cfg.get("market_data_mode", "LIVE")).upper() != "LIVE":
+            return {"ready": True, "fresh": 0, "required": 0,
+                    "reason": "Synthetic test feed (not production LIVE pricing)"}
+        elapsed = (time.monotonic() - self.last_scan_completed_at
+                   if self.last_scan_completed_at is not None else None)
+        if elapsed is None or elapsed > 45:
+            return {"ready": False, "fresh": 0, "required": 3,
+                    "reason": "Market scanner has not completed recently",
+                    "last_scan_age_seconds": None if elapsed is None else round(elapsed, 1)}
+        fresh = 0
+        for symbol, snap in list(self.engine.snapshots.items()):
+            if str(getattr(snap, "feed_status", "")) != "LIVE":
+                continue
+            age = float(getattr(snap, "data_age_seconds", float("inf")) or 0)
+            meta = instrument_meta(symbol)
+            max_age = float(self.cfg.get("live_data_stale_seconds", 180)) if meta.get("asset_class") in ("FOREX", "CRYPTO") else float(self.cfg.get("live_data_delayed_stale_seconds", 1200))
+            if math.isfinite(age) and age <= max_age:
+                fresh += 1
+        required = 3
+        return {"ready": fresh >= required, "fresh": fresh,
+                "required": required, "last_scan_age_seconds": round(elapsed, 1),
+                "reason": "Ready for simulated trading" if fresh >= required
+                          else "Waiting for at least 3 fresh LIVE market candles"}
 
     def _learning(self):
         if time.monotonic() - self._learning_at > 15:
@@ -190,6 +231,8 @@ class MobileRuntime:
                        if self._scan_started_monotonic is not None else 0.0)
             stale["state_stale"] = True
             stale["scan_busy_seconds"] = round(max(0.0, elapsed), 1)
+            stale["trading_readiness"] = {"ready": False, "fresh": 0, "required": 3,
+                                           "reason": "Scanner busy: PAPER trading start is blocked"}
             stale["status"] = "SCANNER BUSY · showing last known PAPER snapshot"
             if elapsed >= 10 and time.monotonic() - self._lock_warning_at >= 30:
                 self._lock_warning_at = time.monotonic()
@@ -205,6 +248,9 @@ class MobileRuntime:
             result = clean_value({
                 "version": __version__, "paper_only": True, "running": e.enabled,
                 "state_stale": False, "scan_busy_seconds": 0,
+                "trading_readiness": self.trading_readiness(),
+                "staged_paper_test": self.staged_paper_test,
+                "full_symbol_count": self.full_symbol_count,
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
@@ -249,11 +295,17 @@ class MobileRuntime:
             return data
 
     def command(self, name, payload):
-        with self.lock:
+        # Avoid hanging user controls while a public provider or scanner is busy.
+        if not self.lock.acquire(timeout=1.0):
+            raise ValueError("Scanner busy: try again when LIVE scan finishes")
+        try:
             e = self.engine
             if name == "start":
                 if e.enabled:
                     return {"message": "AI already active", "running": True}
+                readiness = self.trading_readiness()
+                if not readiness["ready"]:
+                    raise ValueError("PAPER start blocked: " + readiness["reason"])
                 if e.positions:
                     # Preserve any paused open PAPER positions; never reset them silently.
                     e.set_enabled(True, reset_on_start=False)
@@ -320,6 +372,8 @@ class MobileRuntime:
                 self._save_config()
                 return {"message": "Settings saved. Capital applies on next new session."}
             raise KeyError("Unknown command")
+        finally:
+            self.lock.release()
 
     def _save_config(self):
         """Store mobile runtime overrides separately; do not overwrite PC config by accident."""
