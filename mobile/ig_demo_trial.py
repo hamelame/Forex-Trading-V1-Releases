@@ -170,7 +170,7 @@ def _validate_preflight(p):
             or m.get("status") != "TRADEABLE"
             or m.get("stops_allowed") is not True
             or m.get("expiry") != "-"
-            or m.get("market_order_preference") == "NOT_AVAILABLE"):
+            or m.get("market_order_preference") not in ("AVAILABLE_DEFAULT_OFF", "AVAILABLE_DEFAULT_ON")):
         raise IGTrialError("EUR/USD Mini is not currently eligible for safe DEMO orders.")
     if m.get("delay_minutes") != 0:
         raise IGTrialError("IG DEMO EUR/USD Mini price is delayed or not verified as live.")
@@ -408,7 +408,7 @@ def create_first_demo_trade(*, phrase, environ=None, storage_dir=None, opener=No
         except (IGTrialError, ValueError, TypeError):
             record["stage"] = "PENDING_RECONCILIATION"
             record["last_note"] = ("Broker order response uncertain. Check IG DEMO "
-                                   "platform. No retry or automatic trade.")
+                                   "platform. Do not retry or enable automatic trading.")
         record["changed_at"] = _now()
         _update(path, record)
         return _safe_status(record)
