@@ -111,8 +111,49 @@ class BrokerPreflightTests(unittest.TestCase):
                 "accountType": "CFD", "reroutingEnvironment": "LIVE",
                 "dealingEnabled": True, "currentAccountId": "DEMO123",
             }, headers={"CST": "x", "X-SECURITY-TOKEN": "y"})
-        with self.assertRaisesRegex(preflight.IGDemoError, "did not confirm DEMO"):
+        with self.assertRaisesRegex(preflight.IGDemoError, "non-DEMO environment"):
             preflight.preview(self.env, opener=live_login)
+
+    def test_null_rerouting_environment_is_valid_on_pinned_demo_host(self):
+        """IG v2 may return reroutingEnvironment=null when no redirect is needed."""
+        def demo_login_null(req, timeout):
+            if req.full_url.endswith("/session"):
+                self.assertTrue(req.full_url.startswith(preflight.DEMO_BASE))
+                return FakeResponse({
+                    "accountType": "CFD", "reroutingEnvironment": None,
+                    "dealingEnabled": True, "currentAccountId": "DEMO123",
+                }, headers={"CST": "private-cst", "X-SECURITY-TOKEN": "private-xst"})
+            return self.fake_ig(req, timeout)
+
+        result = preflight.preview(self.env, opener=demo_login_null)
+        self.assertEqual(result["environment"], "DEMO")
+        self.assertEqual(result["account_type"], "CFD")
+        self.assertFalse(result["broker_order_execution_enabled"])
+        self.assertEqual(result["market_candidates"][0]["symbol"], "EURUSD")
+        self.assertTrue(all(method == "GET" for method, _ in self.calls))
+
+    def test_absent_rerouting_environment_is_valid_on_pinned_demo_host(self):
+        def demo_login_missing(req, timeout):
+            if req.full_url.endswith("/session"):
+                return FakeResponse({
+                    "accountType": "CFD", "dealingEnabled": True,
+                    "currentAccountId": "DEMO123",
+                }, headers={"CST": "private-cst", "X-SECURITY-TOKEN": "private-xst"})
+            return self.fake_ig(req, timeout)
+        result = preflight.preview(self.env, opener=demo_login_missing)
+        self.assertEqual(result["environment"], "DEMO")
+        self.assertFalse(result["broker_order_execution_enabled"])
+
+    def test_other_reroutes_are_still_rejected(self):
+        for destination in ("LIVE", "UAT", "TEST", "", "live", 42):
+            with self.subTest(destination=destination):
+                def other_redirect(req, timeout):
+                    return FakeResponse({
+                        "accountType": "CFD", "reroutingEnvironment": destination,
+                        "dealingEnabled": True, "currentAccountId": "DEMO123"
+                    }, headers={"CST": "private-cst", "X-SECURITY-TOKEN": "private-xst"})
+                with self.assertRaisesRegex(preflight.IGDemoError, "non-DEMO environment"):
+                    preflight.preview(self.env, opener=other_redirect)
 
     def test_spreadbet_is_rejected(self):
         def spreadbet(req, timeout):
