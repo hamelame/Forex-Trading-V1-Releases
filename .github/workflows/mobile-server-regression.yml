@@ -12,6 +12,7 @@ on:
       - mobile-ig-demo-execution-preflight-20261009
       - mobile-ig-demo-null-reroute-fix-20261009
       - mobile-ig-eurusd-discovery-fix-20261009
+      - mobile-ig-demo-first-trade-safe-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
@@ -29,4 +30,4 @@ jobs:
       - name: Check browser JavaScript syntax
         run: node --check mobile/web/app.js
       - name: Compile modified Python modules
-        run: python -m py_compile mobile/server.py mobile_cloud/app.py mobile/ig_demo.py mobile/ig_demo_preflight.py forex_app/live_market.py
+        run: python -m py_compile mobile/server.py mobile_cloud/app.py mobile/ig_demo.py mobile/ig_demo_preflight.py mobile/ig_demo_trial.py forex_app/live_market.py
