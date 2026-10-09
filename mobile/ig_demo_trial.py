@@ -166,12 +166,20 @@ def _validate_preflight(p):
     if len(matches) != 1:
         raise IGTrialError("Verified IG DEMO EUR/USD Mini EPIC is missing.")
     m = matches[0]
-    if (m.get("type") != "CURRENCIES" or m.get("unit") != "CONTRACTS"
-            or m.get("status") != "TRADEABLE"
-            or m.get("stops_allowed") is not True
-            or m.get("expiry") != "-"
-            or m.get("market_order_preference") not in ("AVAILABLE_DEFAULT_OFF", "AVAILABLE_DEFAULT_ON")):
-        raise IGTrialError("EUR/USD Mini is not currently eligible for safe DEMO orders.")
+    # Identify each failing broker safety gate without ever returning raw
+    # account metadata, login tokens, or arbitrary IG error responses.
+    if m.get("type") != "CURRENCIES":
+        raise IGTrialError("IG DEMO EUR/USD Mini is not confirmed as a Forex currency instrument.")
+    if m.get("unit") != "CONTRACTS":
+        raise IGTrialError("IG DEMO EUR/USD Mini contract units are not verified.")
+    if m.get("status") != "TRADEABLE":
+        raise IGTrialError("IG DEMO EUR/USD Mini is not tradeable right now. Check market hours.")
+    if m.get("stops_allowed") is not True:
+        raise IGTrialError("IG DEMO EUR/USD Mini does not confirm stop-loss and take-profit support.")
+    if m.get("expiry") != "-":
+        raise IGTrialError("IG DEMO EUR/USD Mini expiry is not eligible for this trial.")
+    if m.get("market_order_preference") not in ("AVAILABLE_DEFAULT_OFF", "AVAILABLE_DEFAULT_ON"):
+        raise IGTrialError("IG DEMO EUR/USD Mini market-order support is not verified.")
     if m.get("delay_minutes") != 0:
         raise IGTrialError("IG DEMO EUR/USD Mini price is delayed or not verified as live.")
     contract = _positive(m.get("contract_size"), "Mini contract size")
