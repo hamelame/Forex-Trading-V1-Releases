@@ -7,6 +7,7 @@ on:
       - mobile-v2926-feed-hang-debug-20261009
       - mobile-v2926-postfork-worker-20261009
       - mobile-v2926-247-persistence-prep-20261009
+      - mobile-ig-demo-readonly-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
@@ -24,4 +25,4 @@ jobs:
       - name: Check browser JavaScript syntax
         run: node --check mobile/web/app.js
       - name: Compile modified Python modules
-        run: python -m py_compile mobile/server.py mobile_cloud/app.py forex_app/live_market.py
+        run: python -m py_compile mobile/server.py mobile_cloud/app.py mobile/ig_demo.py forex_app/live_market.py
