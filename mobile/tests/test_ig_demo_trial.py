@@ -187,7 +187,7 @@ class FirstIGDemoTradeTests(unittest.TestCase):
             ("stops_allowed", False),
             ("delay_minutes", 1),
             ("expiry", "DFB"),
-            ("bid", 11200),
+            ("bid", 11205),
             ("offer", 11210),
             ("currencies", []),
             ("market_order_preference", "NOT_AVAILABLE"),
