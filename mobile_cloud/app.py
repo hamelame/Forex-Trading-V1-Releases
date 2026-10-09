@@ -9,6 +9,8 @@ import logging
 import os
 import sys
 import threading
+import time
+import math
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -21,6 +23,10 @@ from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 from mobile.ig_demo import IGDemoError, status as ig_demo_status, check_connection as ig_demo_check
 from mobile.ig_demo_preflight import preview as ig_demo_preflight
 from mobile.ig_demo_risk import policy as ig_demo_risk_policy
+from mobile.ig_demo_auto import (
+    IGDemoAuto, START_PHRASE as IG_AUTO_START_PHRASE,
+    STOP_PHRASE as IG_AUTO_STOP_PHRASE,
+)
 from mobile.ig_demo_trial import (
     IGTrialError, status as ig_trial_status, create_first_demo_trade,
     check_first_demo_trade, close_first_demo_trade,
@@ -169,6 +175,115 @@ def ig_demo_trial_close():
     except Exception:
         logging.error("IG DEMO single-order close uncertain")
         return jsonify(error="IG DEMO close needs manual review. Check IG platform."), 503
+
+
+
+# Separate, opt-in DEMO broker worker. No changing, monkeypatching, or stopping
+# the existing PAPER AI. Initialization is post-fork and nonblocking on /status.
+ig_auto_worker = None
+ig_auto_pid = None
+ig_auto_init_lock = threading.Lock()
+
+
+def ig_auto_paper_snapshot():
+    """Tiny lock-bounded snapshot; IG HTTP calls always run OUTSIDE PAPER lock."""
+    rt = get_runtime()
+    if not rt.lock.acquire(timeout=0.15):
+        return {"scan_fresh": False, "paper_positions": []}
+    try:
+        e = rt.engine
+        scan_age = (time.monotonic() - rt.last_scan_completed_at
+                    if rt.last_scan_completed_at is not None else math.inf)
+        snap = e.snapshots.get("EURUSD")
+        feed_age = getattr(snap, "data_age_seconds", None) if snap else None
+        try:
+            feed_age = float(feed_age)
+        except (TypeError, ValueError):
+            feed_age = math.inf
+        if not math.isfinite(feed_age):
+            feed_age = None
+        return {
+            "engine_running": bool(e.enabled),
+            "paper_storage_ready": bool(rt.durable and rt.persistence_error is None),
+            "market_data_mode": str(rt.cfg.get("market_data_mode", "")),
+            "scan_fresh": (
+                math.isfinite(scan_age) and scan_age <= 45
+                and rt.persistence_error is None and rt.last_scan_error is None
+                and str(rt.cfg.get("market_data_mode", "")) == "LIVE"
+            ),
+            "eurusd_feed_status": str(getattr(snap, "feed_status", "")) if snap else "",
+            "eurusd_feed_age_seconds": feed_age,
+            "paper_positions": [
+                {
+                    "id": p.id, "symbol": p.symbol, "side": p.side,
+                    "opened_at": p.opened_at,
+                }
+                for p in e.positions if p.symbol == "EURUSD"
+            ],
+        }
+    finally:
+        rt.lock.release()
+
+
+def get_ig_demo_auto():
+    global ig_auto_worker, ig_auto_pid
+    pid = os.getpid()
+    if ig_auto_worker is not None and ig_auto_pid == pid:
+        return ig_auto_worker
+    with ig_auto_init_lock:
+        if ig_auto_worker is None or ig_auto_pid != pid:
+            ig_auto_worker = IGDemoAuto(ig_auto_paper_snapshot)
+            ig_auto_pid = pid
+        return ig_auto_worker
+
+
+@app.route("/api/ig-demo/auto/status", methods=["GET"])
+def ig_demo_auto_status():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(get_ig_demo_auto().status())
+    except IGTrialError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO AUTO status unavailable")
+        return jsonify(error="IG DEMO AUTO requires manual review"), 503
+
+
+@app.route("/api/ig-demo/auto/start", methods=["POST"])
+def ig_demo_auto_start():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or set(values) != {"confirm"}:
+        return jsonify(error="Explicit DEMO AUTO start confirmation required"), 400
+    try:
+        return jsonify(get_ig_demo_auto().start(values["confirm"]))
+    except (IGTrialError, IGDemoError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO AUTO start blocked")
+        return jsonify(error="IG DEMO AUTO start blocked; no order placed"), 503
+
+
+@app.route("/api/ig-demo/auto/stop", methods=["POST"])
+def ig_demo_auto_stop():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or set(values) != {"confirm"}:
+        return jsonify(error="Explicit DEMO AUTO stop confirmation required"), 400
+    try:
+        return jsonify(get_ig_demo_auto().stop(values["confirm"]))
+    except (IGTrialError, IGDemoError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO AUTO stop blocked")
+        return jsonify(error="IG DEMO AUTO stop needs manual review"), 503
 
 
 @app.route("/api/ig-demo/risk-policy", methods=["GET"])
