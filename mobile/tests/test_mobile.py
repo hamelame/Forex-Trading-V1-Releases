@@ -2,6 +2,7 @@ import http.client
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -62,6 +63,35 @@ class MobileBridgeTests(unittest.TestCase):
         self.assertEqual(status,401)
         status,_=self.req('GET','/health',token=None)
         self.assertEqual(status,200)
+
+    def test_state_returns_cached_status_when_scan_lock_is_busy(self):
+        """A hung provider/scan must never hang iPhone token login."""
+        acquired = threading.Event()
+        release = threading.Event()
+
+        def busy_scan():
+            with self.runtime.lock:
+                acquired.set()
+                release.wait(timeout=3.0)
+
+        thread = threading.Thread(target=busy_scan, daemon=True)
+        thread.start()
+        self.assertTrue(acquired.wait(timeout=1.0))
+        try:
+            start = time.monotonic()
+            code, payload = self.req('GET', '/api/state')
+            elapsed = time.monotonic() - start
+            self.assertEqual(code, 200)
+            self.assertTrue(payload['paper_only'])
+            self.assertTrue(payload['state_stale'])
+            self.assertIn('SCANNER BUSY', payload['status'])
+            self.assertLess(elapsed, 1.5)
+        finally:
+            release.set()
+            thread.join(timeout=2)
+        code, payload = self.req('GET', '/api/state')
+        self.assertEqual(code, 200)
+        self.assertFalse(payload['state_stale'])
 
     def test_state_parity(self):
         status,data=self.req('GET','/api/state')
