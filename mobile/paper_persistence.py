@@ -122,6 +122,11 @@ class PaperCheckpoint:
         ids = [p.id for p in positions]
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate PAPER position IDs")
+        db_ids = {row["id"] for row in self.db.load_positions()}
+        if set(ids) != db_ids:
+            # A crash can occur after a trade was committed but before its
+            # checkpoint. Never erase such unmatched ledger rows automatically.
+            raise ValueError("PAPER positions disagree with SQLite ledger; manual review required")
         if any(p.symbol not in symbols or p.side not in ("BUY", "SELL")
                or p.lots <= 0 or p.risk_amount <= 0
                or not all(math.isfinite(float(n)) for n in
