@@ -119,6 +119,7 @@ class MobileRuntime:
         self._learning_at = 0.0
         self.last_scan_at = None
         self.last_scan_error = None
+        self._last_feed_warning = 0.0
         self.started_at = utcnow()
         self.worker = None
         if start_worker:
@@ -133,6 +134,11 @@ class MobileRuntime:
                     self.engine.scan()
                     self.last_scan_at = utcnow()
                     self.last_scan_error = None
+                    if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
+                        self._last_feed_warning = time.monotonic()
+                        feed_errors = getattr(self.feed, '_last_error', {})
+                        logging.warning('PAPER market data unavailable: provider failures=%d; examples=%r',
+                                        len(feed_errors), list(feed_errors.items())[:4])
             except Exception as exc:
                 logging.exception("Engine scan failed")
                 self.last_scan_error = str(exc)[:240]
@@ -174,6 +180,10 @@ class MobileRuntime:
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
+                "feed_diagnostics": {"fresh_markets": len(e.snapshots),
+                                     "failed_fetches": len(getattr(self.feed, "_last_error", {})),
+                                     "examples": [f"{symbol}: {err}"[:180] for symbol, err in
+                                                  list(getattr(self.feed, "_last_error", {}).items())[:4]]},
                 "balance": e.balance, "equity": e.equity, "unrealized": e.unrealized_pnl(),
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
