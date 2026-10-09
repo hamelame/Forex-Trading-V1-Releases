@@ -24,10 +24,30 @@ TOKEN = (os.getenv("FX_MOBILE_TOKEN") or os.getenv("MOBILE_ACCESS_TOKEN") or "")
 if len(TOKEN) < 16:
     raise RuntimeError("Set FX_MOBILE_TOKEN or MOBILE_ACCESS_TOKEN to 16+ chars in Render")
 
-# Engine's historical learning paths are relative to the isolated deployment root.
+# Keep historical learning paths rooted in the isolated mobile checkout.
 os.chdir(ROOT)
-os.environ.setdefault("FX_MOBILE_DB", "/tmp/fx_mobile_v2926.sqlite")
-os.environ.setdefault("FX_MOBILE_SETTINGS", "/tmp/fx_mobile_settings_v2926.json")
+
+# Opt-in durable storage for PAID Render services with a mounted disk.
+# Only an actual mount protects state from restarts. Refuse to pretend that
+# /var/data exists as durable storage if the operator forgot to attach a disk.
+def configure_mobile_storage():
+    disk = os.getenv("FX_MOBILE_STORAGE_DIR", "").strip()
+    if not disk:
+        os.environ.setdefault("FX_MOBILE_DB", "/tmp/fx_mobile_v2926.sqlite")
+        os.environ.setdefault("FX_MOBILE_SETTINGS", "/tmp/fx_mobile_settings_v2926.json")
+        return False
+    directory = Path(disk)
+    if not directory.is_absolute() or not directory.is_dir() or not os.path.ismount(str(directory)):
+        raise RuntimeError("FX_MOBILE_STORAGE_DIR must be an existing mounted persistent disk, e.g. /var/data")
+    for key, filename in (("FX_MOBILE_DB", "fx_mobile.sqlite"),
+                          ("FX_MOBILE_SETTINGS", "fx_mobile_settings.json")):
+        candidate = Path(os.getenv(key, str(directory / filename)))
+        if not candidate.is_absolute() or not candidate.resolve().is_relative_to(directory.resolve()):
+            raise RuntimeError(f"{key} must be located inside the persistent disk")
+        os.environ[key] = str(candidate)
+    return True
+
+STORAGE_PERSISTENT = configure_mobile_storage()
 # Gunicorn may import this module in its parent/preload process. NEVER
 # create MobileRuntime on import: its scanner + provider threads would then
 # disappear after fork, leaving the engine lock apparently held forever.
