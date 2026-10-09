@@ -217,6 +217,8 @@ class MobileRuntime:
             self.shutdown.wait(max(0.2, float(delay) - (time.monotonic() - begin)))
 
     def _persist_checkpoint(self):
+        if self.checkpoint and self.persistence_error:
+            raise RuntimeError("PAPER recovery/storage requires review before saving")
         if self.checkpoint:
             try:
                 self.checkpoint.save(self.engine, auto_resume=self.auto_resume_pending)
@@ -511,7 +513,8 @@ class MobileRuntime:
         with self.lock:
             close = getattr(self.feed, "close", None)
             if callable(close): close()
-            self._persist_checkpoint()
+            if not self.persistence_error:
+                self._persist_checkpoint()
             self.db.conn.close()
 
 
