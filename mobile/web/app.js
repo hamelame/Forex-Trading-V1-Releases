@@ -87,17 +87,23 @@ async function checkIGDemoReadiness(){
  out.textContent='';
  try{
   const p=await api('/api/ig-demo/preflight',{method:'POST'});
-  state.textContent='CONNECTED TO IG DEMO CFD · read-only risk preflight succeeded. Broker execution is NOT armed.';
   let m=p.market_candidates||[];
+  state.textContent=m.length
+   ? 'IG DEMO CFD CONNECTED · EUR/USD instrument verified. Broker execution remains OFF.'
+   : 'IG DEMO CFD CONNECTED · EUR/USD instrument NOT VERIFIED. All broker orders remain BLOCKED.';
+  const search=(p.search_diagnostics||[]).map(x=>
+   String(x.term)+': '+String(x.results)+' results, '+String(x.pair_matches)+' pair matches').join(' · ');
   out.innerHTML=
    row('IG environment','<span class="positive">DEMO CFD</span>','NO live account access')+
    row('IG available funds',escape(String(p.account_available??'—')+' '+(p.account_currency||'')), 'IG DEMO funds, separate from PAPER')+
    row('IG balance',escape(String(p.account_balance??'—')+' '+(p.account_currency||'')))+
    row('Existing IG positions',escape(String(p.existing_ig_positions??'—')),'Must reconcile any existing broker trades before auto mode')+
+   row('Instrument discovery',escape(search||'No IG market search results'),'Read-only IG market search; no broker orders')+
    '<h3>EURUSD IG CFD instruments</h3>'+
    (m.length?m.map(v=>'<div class="panel">'+
        '<strong>'+escape(v.name)+' · '+escape(v.epic)+'</strong>'+
        '<div class="mini-stats">'+
+       kv('Verified by',v.source||'IG market details')+
        kv('Market status',v.status)+kv('Expiry',v.expiry)+
        kv('Bid / Offer',String(v.bid??'—')+' / '+String(v.offer??'—'))+
        kv('Minimum size',String(v.minimum_deal_size?.value??'—')+' '+String(v.minimum_deal_size?.unit||''))+
@@ -106,9 +112,9 @@ async function checkIGDemoReadiness(){
        kv('Contract size',v.contract_size)+kv('Unit',v.unit)+
        kv('Stops permitted',String(v.stops_allowed))+
        kv('Order preference',v.market_order_preference)+
-       '</div></div>').join(''):'<p class="muted">IG returned no confirmed EURUSD CFD instruments. Need manual EPIC discovery before orders.</p>')+
+       '</div></div>').join(''):'<p class="muted">No EUR/USD instrument could be verified for this IG account. Broker execution remains blocked. Search counts above help determine why.</p>')+
    '<p class="muted">'+escape(p.blocked_reason||'Broker orders are still disabled.')+'</p>';
-  toast('IG DEMO account and market preflight completed');
+  toast(m.length?'IG DEMO EUR/USD market verified · no orders':'IG DEMO account connected; EUR/USD still not verified');
  }catch(err){
   state.textContent='IG DEMO preflight blocked: '+String(err.message||err);
   toast('IG DEMO preflight blocked',true);
