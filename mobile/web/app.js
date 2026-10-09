@@ -2,7 +2,7 @@
 const $=id=>document.getElementById(id);
 const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','ig-demo','settings'];
 const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality','ig-demo':'IG DEMO Live Test',settings:'Settings'};
-const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0,igMiniReady:false,igDemoTrial:null,igDemoTrialBusy:false};
+const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0,igMiniReady:false,igDemoTrial:null,igDemoTrialBusy:false,igAuto:null,igAutoBusy:false};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v,n=2)=>(Number.isFinite(Number(v))?Number(v).toLocaleString('en-US',{minimumFractionDigits:n,maximumFractionDigits:n}):'—');
 const money=v=>`${Number(v)<0?'-':''}$${num(Math.abs(Number(v)),2)}`;
@@ -51,7 +51,7 @@ async function connect(){
 async function fetchState(silent=true){if(app.requesting||$('app').hidden)return;app.requesting=true;try{app.state=await api('/api/state');if(!app.touchScrolling&&Date.now()-app.lastScrollAt>1000){const y=window.scrollY,ml=$('markets-list'),mlY=ml?.scrollTop||0;render();if(ml&&mlY)ml.scrollTop=mlY;if(y>10&&window.scrollY<y-8)window.scrollTo(0,y);if(app.page==='markets'&&app.chartSymbol&&Date.now()-app.lastCandleAt>15000)await fetchCandles()}}catch(e){if(!silent)toast(e.message,true);else $('engine-status').textContent='OFFLINE'}finally{app.requesting=false}}
 async function cmd(name,payload={}){try{let result=await api('/api/command/'+name,{method:'POST',body:JSON.stringify(payload)});toast(result.message||'Completed');await fetchState(false)}catch(e){toast(e.message,true)}}
 function confirmDialog(title,message,yes,action='Confirm'){return new Promise(resolve=>{let el=$('confirm');$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-ok').textContent=action;el.hidden=false;const done=answer=>{el.hidden=true;$('confirm-ok').onclick=null;$('confirm-cancel').onclick=null;resolve(answer)};$('confirm-ok').onclick=()=>done(true);$('confirm-cancel').onclick=()=>done(false)})}
-function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay();if(page==='quality')refreshIGDemoStatus();if(page==='ig-demo'){app.igMiniReady=false;fetchIGDemoTrialStatus();fetchIGDemoRiskPolicy()}}
+function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay();if(page==='quality')refreshIGDemoStatus();if(page==='ig-demo'){app.igMiniReady=false;fetchIGDemoTrialStatus();fetchIGDemoRiskPolicy();fetchIGDemoAutoStatus()}}
 async function refreshIGDemoStatus(){
  const el=$('ig-demo-details'); if(!el||!app.token)return;
  try{
@@ -94,6 +94,68 @@ async function fetchIGDemoRiskPolicy(){
  try{const p=await api('/api/ig-demo/risk-policy');renderIGDemoRisk(p)}
  catch(_){const el=$('ig-demo-risk-policy');if(el)el.textContent='Could not load IG DEMO risk policy.'}
 }
+
+function renderIGDemoAuto(){
+ const p=app.igAuto||{},stage=String(p.stage||'UNKNOWN');
+ const armed=p.armed===true,busy=app.igAutoBusy;
+ const state=$('ig-demo-auto-stage');if(!state)return;
+ state.textContent='IG DEMO AUTO: '+stage+(armed?' · ARMED':' · NOT ARMED');
+ $('ig-demo-auto-note').textContent=String(p.note||'Start only after verifying that IG DEMO has no open positions.');
+ const panel=$('ig-demo-auto-stats');
+ panel.innerHTML=
+  row('Broker & mode','<span class="positive">IG DEMO CFD</span>','No real-money accounts')+
+  row('AI signal','EURUSD BUY only','NEW PAPER trade, after arming; 0.1 Mini; no copied lots')+
+  row('Risk policy',escape(String(p.risk_percent??0.5)+'%'),'Fixed size 0.1 Mini with extra loss buffer and broker stop')+
+  row('IG trades attempted today',escape(String(p.attempts_today??0)+' / '+String(p.max_attempts_today??2)))+
+  row('Estimated planned risk buffer',escape(p.estimated_risk_buffer_nok==null?'Not checked':num(p.estimated_risk_buffer_nok)+' NOK'),'Planned estimate only; loss can exceed this with slippage/costs')+
+  row('Max permitted planned risk',escape(p.opening_risk_budget_nok==null?'Awaiting broker':num(p.opening_risk_budget_nok)+' NOK'),'0.5% of the lower usable demo funds')+
+  row('Broker-side stop verified',escape(p.broker_stop_verified===true?'YES':'Not currently verified'))+
+  row('Real-money trading','<span class="muted">DISABLED</span>');
+ const start=$('ig-demo-auto-start'),stop=$('ig-demo-auto-stop'),refresh=$('ig-demo-auto-refresh');
+ const canStart=['STOPPED','CLOSED','WATCHING'].includes(stage);
+ start.disabled=busy||armed||!canStart;
+ stop.disabled=busy||!armed;
+ refresh.disabled=busy;
+}
+async function fetchIGDemoAutoStatus(){
+ try{app.igAuto=await api('/api/ig-demo/auto/status');renderIGDemoAuto()}
+ catch(err){
+  app.igAuto={stage:'STATUS ERROR',note:'Could not read IG DEMO AUTO. '+String(err.message||err)};
+  renderIGDemoAuto();
+ }
+}
+async function igDemoAutoCommand(action,phrase){
+ if(app.igAutoBusy)return;
+ app.igAutoBusy=true;renderIGDemoAuto();
+ try{
+  app.igAuto=await api('/api/ig-demo/auto/'+action,{
+   method:'POST',body:JSON.stringify({confirm:phrase})
+  });
+  toast('IG DEMO AUTO: '+String(app.igAuto.stage||'Updated'));
+ }catch(err){
+  toast('IG DEMO AUTO: '+String(err.message||err),true);
+  await fetchIGDemoAutoStatus();
+ }finally{
+  app.igAutoBusy=false;renderIGDemoAuto();
+ }
+}
+async function startIGDemoAuto(){
+ if(app.igAutoBusy||app.igAuto?.armed)return;
+ const accepted=await confirmDialog('Start IG DEMO AUTO using VIRTUAL funds?',
+  'This can place actual IG DEMO CFD positions with VIRTUAL funds after the PAPER AI opens a NEW EURUSD BUY. Fixed 0.1 EUR/USD Mini, broker-side stop 20 IG points, target 40, max planned initial stop risk 0.5% and 2 attempts/day. A failed/uncertain order or broker stop blocks further entries. Stops are not guaranteed. Stop button stops NEW entries and does NOT immediately close an open IG position. Start now?',
+  'yes','Start IG DEMO AUTO');
+ if(!accepted)return;
+ await igDemoAutoCommand('start','START IG DEMO AUTO 0.5%');
+}
+async function stopIGDemoAuto(){
+ if(!app.igAuto?.armed||app.igAutoBusy)return;
+ const accepted=await confirmDialog('Stop IG DEMO AUTO entries?',
+  'Stop new IG DEMO entries. Existing IG DEMO positions may remain open with their broker-side stop/target until closed. Monitor any open positions in the IG DEMO platform.',
+  'yes','Stop IG entries');
+ if(!accepted)return;
+ await igDemoAutoCommand('stop','STOP IG DEMO AUTO');
+}
+
 async function checkIGDemoReadiness(){
  const button=$('ig-demo-preflight'),state=$('ig-demo-live-status'),out=$('ig-demo-live-results');
  if(button.disabled)return;
@@ -196,7 +258,7 @@ async function refreshIGDemoTrial(){
  if(app.igDemoTrialBusy)return;
  await runIGDemoTrialAction('refresh','');
 }
-function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;$('ig-demo-trial-open').onclick=openIGDemoTrial;$('ig-demo-trial-close').onclick=closeIGDemoTrial;$('ig-demo-trial-refresh').onclick=refreshIGDemoTrial;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(!ready?.ready){toast(ready?.reason||'Wait for fresh LIVE market data before starting PAPER AI.',true);return}if(await confirmDialog('Start PAPER AI','Begin a simulated-trading test on fresh LIVE prices? No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
+function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;$('ig-demo-auto-start').onclick=startIGDemoAuto;$('ig-demo-auto-stop').onclick=stopIGDemoAuto;$('ig-demo-auto-refresh').onclick=fetchIGDemoAutoStatus;$('ig-demo-trial-open').onclick=openIGDemoTrial;$('ig-demo-trial-close').onclick=closeIGDemoTrial;$('ig-demo-trial-refresh').onclick=refreshIGDemoTrial;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(!ready?.ready){toast(ready?.reason||'Wait for fresh LIVE market data before starting PAPER AI.',true);return}if(await confirmDialog('Start PAPER AI','Begin a simulated-trading test on fresh LIVE prices? No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
 function render(){const s=app.state;if(!s)return;$('status-dot').classList.toggle('active',s.running);$('engine-status').textContent=s.running?'AI ACTIVE':'AI PAUSED';$('version').textContent='v'+s.version;$('about-version').textContent=s.version;$('scan-clock').textContent='Scan '+stamp(s.last_scan_at);const feedExamples=s.feed_diagnostics?.examples||[];$('engine-message').textContent=s.last_scan_error?`SCAN ERROR: ${s.last_scan_error}`:(s.markets.length===0&&feedExamples.length?`LIVE DATA UNAVAILABLE · ${feedExamples.slice(0,2).join(' | ')}`:s.status);$('start').disabled=!!s.running||!s.trading_readiness?.ready||!!s.state_stale;$('start').title=s.trading_readiness?.reason||'Waiting for price feed';$('pause').disabled=!s.running;$('open-count').textContent=s.positions.length;$('market-count').textContent=s.symbols.length+' test markets';$('session-label').textContent=s.markets.find(x=>x.session)?.session||'—';renderDashboard();if(app.page==='markets')renderMarkets();if(app.page==='positions')renderPositions();if(app.page==='decisions')renderDecisions();if(app.page==='trades')renderTrades();if(app.page==='replay')renderReplayList();if(app.page==='performance')renderPerformance();if(app.page==='shadow')renderShadow();if(app.page==='quality')renderQuality();if(app.page==='settings'){if(!document.activeElement?.closest?.('#settings-form'))renderSettings();renderWatchlist()}drawGraphs()}
 function renderDashboard(){let s=app.state,p=s.performance;
  $('metrics').innerHTML=metric('PAPER equity',money(s.equity),'Balance '+money(s.balance))+metric('Unrealized P&L',money(s.unrealized),'Open simulated trades',cls(s.unrealized))+metric('Realized P&L',money(p.pnl),p.trades+' closed trades',cls(p.pnl))+metric('Win rate',num(p.win_rate,1)+'%',`Profit factor ${num(p.pf)}`,p.win_rate>=50?'positive':'gold');
@@ -252,4 +314,4 @@ $('connect').onclick=connect;
 $('token').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connect()}};
 $('login-status').textContent='Login ready. Enter your token and tap Connect.';
 if(app.token){$('token').value=app.token;connect()}
-setInterval(()=>{if(!$('app').hidden)fetchState()},5000);
+setInterval(()=>{if(!$('app').hidden)fetchState();if(!$('app').hidden&&app.page==='ig-demo')fetchIGDemoAutoStatus()},5000);
