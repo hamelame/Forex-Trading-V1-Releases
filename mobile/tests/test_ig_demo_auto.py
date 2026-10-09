@@ -338,17 +338,33 @@ class IGDemoAutoTests(unittest.TestCase):
         self.assertEqual([m for m,_ in self.actions].count("DELETE"), 0)
         self.assertEqual([m for m,_ in self.actions].count("POST"), 1)
 
-    def test_readonly_reconcile_does_not_rearm_or_close_open_broker_deal(self):
+    def test_readonly_reconcile_preserves_active_verified_broker_monitoring(self):
         self.start()
         self.paper = fresh_paper([position("one")])
         self.engine.tick()
         before = list(self.actions)
         verified = self.engine.reconcile()
-        self.assertEqual(verified["stage"], "REVIEW_REQUIRED")
-        self.assertFalse(verified["armed"])
+        self.assertEqual(verified["stage"], "OPEN")
+        self.assertTrue(verified["armed"])
         self.assertTrue(verified["broker_stop_verified"])
         self.assertEqual([m for m,_ in self.actions].count("POST"),
                          [m for m,_ in before].count("POST"))
+        self.assertEqual([m for m,_ in self.actions].count("DELETE"), 0)
+        stopped = self.engine.stop(auto.STOP_PHRASE)
+        self.assertFalse(stopped["armed"])
+        after_stop = self.engine.reconcile()
+        self.assertEqual(after_stop["stage"], "OPEN")
+        self.assertFalse(after_stop["armed"])
+
+    def test_reconcile_unverified_protective_levels_requires_manual_review(self):
+        self.start()
+        self.paper = fresh_paper([position("one")])
+        self.engine.tick()
+        self.positions[0]["position"]["stopLevel"] = None
+        result = self.engine.reconcile()
+        self.assertEqual(result["stage"], "REVIEW_REQUIRED")
+        self.assertFalse(result["armed"])
+        self.assertFalse(result["broker_stop_verified"])
         self.assertEqual([m for m,_ in self.actions].count("DELETE"), 0)
 
     def test_readonly_reconcile_unknown_trade_id_never_claims_closed(self):
