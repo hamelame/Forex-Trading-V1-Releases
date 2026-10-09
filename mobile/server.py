@@ -26,6 +26,7 @@ from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
 from forex_app.live_market import LiveMarketFeed
 from forex_app.market import SyntheticFeed
+from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent / "web"
@@ -123,12 +124,32 @@ class MobileRuntime:
         self.cfg.update(mode="PAPER", paper_only_build=True, broker="synthetic", neural_edge_shadow_only=True)
         # The mobile bridge does not modify the trading strategy defaults.
         db_file = Path(db_path or os.getenv("FX_MOBILE_DB", str(ROOT / "data" / "forex_mobile.db")))
-        self.db = Database(str(db_file))
+        disk = os.getenv("FX_MOBILE_STORAGE_DIR", "").strip()
+        self.durable = bool(disk)
+        if self.durable and not db_file.resolve().is_relative_to(Path(disk).resolve()):
+            raise RuntimeError("PAPER database must be on the mounted permanent disk")
+        self.db = PreservingMobileDatabase(str(db_file)) if self.durable else Database(str(db_file))
+        if self.durable:
+            # TradingEngine's legacy constructor clears open_positions on
+            # every launch. Preserve the mobile ledger during boot instead.
+            self.db._preserve_positions_during_boot = True
         self.feed = feed or (LiveMarketFeed(self.cfg["symbols"], self.cfg)
                              if str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE"
                              else SyntheticFeed(self.cfg["symbols"]))
         self.engine = TradingEngine(self.cfg, self.feed, self.db)
-        self.session_start_capital = self.engine.balance
+        self.checkpoint = PaperCheckpoint(self.db) if self.durable else None
+        self.auto_resume_pending = False
+        self.persistence_error = None
+        if self.checkpoint:
+            try:
+                self.auto_resume_pending = self.checkpoint.restore(self.engine, self.cfg["symbols"])
+                # Persist an initialized account only after successful recovery.
+                self.checkpoint.save(self.engine, auto_resume=self.auto_resume_pending)
+            except Exception as exc:
+                self.persistence_error = f"Recovery requires review: {str(exc)[:150]}"
+                self.engine.enabled = False
+                logging.exception("PAPER durable account recovery failed; AI remains paused")
+        self.session_start_capital = self.engine.risk.session_start_balance
         self._cached_learning = {}
         self._learning_at = 0.0
         self.last_scan_at = None
@@ -173,6 +194,11 @@ class MobileRuntime:
             try:
                 with self.lock:
                     self.engine.scan()
+                    if self.auto_resume_pending and self.trading_readiness_after_scan():
+                        self.engine.set_enabled(True, reset_on_start=False)
+                        self.auto_resume_pending = False
+                        logging.info("Previously active PAPER session safely resumed with fresh LIVE candles")
+                    self._persist_checkpoint()
                     self.last_scan_at = utcnow()
                     self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
@@ -190,8 +216,33 @@ class MobileRuntime:
                      else self.cfg.get("paused_scan_interval_seconds", 4))
             self.shutdown.wait(max(0.2, float(delay) - (time.monotonic() - begin)))
 
+    def _persist_checkpoint(self):
+        if self.checkpoint:
+            try:
+                self.checkpoint.save(self.engine, auto_resume=self.auto_resume_pending)
+            except Exception as exc:
+                self.engine.enabled = False
+                self.auto_resume_pending = False
+                self.persistence_error = "PAPER storage write failed; AI paused"
+                logging.exception("PAPER persistent storage write failed")
+                raise RuntimeError("PAPER storage unavailable; AI paused") from exc
+
+    def trading_readiness_after_scan(self):
+        # The scan has completed its engine work but last_scan_completed_at
+        # belongs to the previous cycle until the caller stamps it.
+        if self.persistence_error:
+            return False
+        previous = self.last_scan_completed_at
+        self.last_scan_completed_at = time.monotonic()
+        try:
+            return bool(self.trading_readiness()["ready"])
+        finally:
+            self.last_scan_completed_at = previous
+
     def trading_readiness(self):
         """Called while engine lock is held; conservatively fail closed."""
+        if self.persistence_error:
+            return {"ready": False, "fresh": 0, "required": 3, "reason": self.persistence_error}
         if str(self.cfg.get("market_data_mode", "LIVE")).upper() != "LIVE":
             return {"ready": True, "fresh": 0, "required": 0,
                     "reason": "Synthetic test feed (not production LIVE pricing)"}
@@ -274,6 +325,9 @@ class MobileRuntime:
             # the outdated zero-error snapshot saved before downloads began.
             stale["feed_diagnostics"] = self._feed_probe()
             stale["status"] = "SCANNER BUSY · showing last known PAPER snapshot"
+            stale["paper_storage"] = {"persistent": self.durable,
+                                      "auto_resume_pending": self.auto_resume_pending,
+                                      "error": self.persistence_error}
             if elapsed >= 10 and time.monotonic() - self._lock_warning_at >= 30:
                 self._lock_warning_at = time.monotonic()
                 # This runs on the HTTP thread even if the watchdog thread
@@ -302,6 +356,9 @@ class MobileRuntime:
             result = clean_value({
                 "version": __version__, "paper_only": True, "running": e.enabled,
                 "state_stale": False, "scan_busy_seconds": 0,
+                "paper_storage": {"persistent": self.durable,
+                                  "auto_resume_pending": self.auto_resume_pending,
+                                  "error": self.persistence_error},
                 "trading_readiness": self.trading_readiness(),
                 "staged_paper_test": self.staged_paper_test,
                 "full_symbol_count": self.full_symbol_count,
@@ -352,6 +409,8 @@ class MobileRuntime:
         try:
             e = self.engine
             if name == "start":
+                if self.persistence_error:
+                    raise ValueError(self.persistence_error)
                 if e.enabled:
                     return {"message": "AI already active", "running": True}
                 readiness = self.trading_readiness()
@@ -365,27 +424,35 @@ class MobileRuntime:
                     if type(reset) is not bool: raise ValueError("new_session must be boolean")
                     e.set_enabled(True, reset_on_start=reset)
                     if reset: self.session_start_capital = e.balance
+                self.auto_resume_pending = False
+                self._persist_checkpoint()
                 return {"message": e.last_status, "running": True}
             if name == "pause":
+                self.auto_resume_pending = False
                 e.set_enabled(False, reset_on_start=False)
+                self._persist_checkpoint()
                 return {"message": "AI paused; paper positions remain open"}
             if name == "stop":
                 close = payload.get("close_positions", False)
                 if type(close) is not bool:
                     raise ValueError("close_positions must be boolean")
                 e.set_enabled(False, reset_on_start=False)
+                self.auto_resume_pending = False
                 count = e.close_all_positions("Mobile Stop · Close All") if close else 0
+                self._persist_checkpoint()
                 return {"message": "AI stopped", "positions_closed": count}
             if name == "close-all":
                 if e.enabled:
                     raise ValueError("Pause AI before closing positions")
                 n = e.close_all_positions("Mobile Manual Close All")
+                self._persist_checkpoint()
                 return {"message": f"Closed {n} PAPER positions", "count": n}
             if name == "new-session":
                 if e.enabled or e.positions:
                     raise ValueError("Pause AI and close all open positions before resetting")
                 e.reset_paper_session()
                 self.session_start_capital = e.balance
+                self._persist_checkpoint()
                 return {"message": e.last_status}
             if name == "refresh":
                 # Worker handles the full refresh; this API never forces network I/O.
@@ -444,6 +511,7 @@ class MobileRuntime:
         with self.lock:
             close = getattr(self.feed, "close", None)
             if callable(close): close()
+            self._persist_checkpoint()
             self.db.conn.close()
 
 
