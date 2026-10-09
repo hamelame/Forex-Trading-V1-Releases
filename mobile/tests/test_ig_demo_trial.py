@@ -114,8 +114,18 @@ class FirstIGDemoTradeTests(unittest.TestCase):
         self.calls.append((method, path))
         if method == "POST" and path == "/positions/otc":
             h = {k.lower(): v for k, v in req.header_items()}
-            self.assertEqual(h["version"], "2")
             data = json.loads(req.data)
+            if h.get("_method") == "DELETE":
+                # IG OTC close is POST on wire, with _method: DELETE and V1.
+                self.assertEqual(h["version"], "1")
+                self.assertEqual(data, {
+                    "dealId": "DEMO_DEAL_A1", "direction": "SELL",
+                    "size": 0.1, "orderType": "MARKET"
+                })
+                self.positions = []
+                return FakeResponse({"dealReference": "CLOSE_REF_123"})
+            self.assertNotIn("_method", h)
+            self.assertEqual(h["version"], "2")
             self.assertEqual(data, {
                 "dealReference": data["dealReference"],
                 "currencyCode": "NOK", "direction": "BUY", "epic": trial.MINI_EPIC,
@@ -142,15 +152,6 @@ class FirstIGDemoTradeTests(unittest.TestCase):
             if path.endswith("CLOSE_REF_123"):
                 return FakeResponse({"dealStatus": "ACCEPTED", "dealId": "DEMO_DEAL_A1"})
             return FakeResponse({"dealStatus": "ACCEPTED", "dealId": "DEMO_DEAL_A1"})
-        if method == "DELETE" and path == "/positions/otc":
-            data = json.loads(req.data)
-            self.assertEqual(data, {
-                "dealId": "DEMO_DEAL_A1", "direction": "SELL",
-                "size": 0.1, "orderType": "MARKET"
-            })
-            self.assertEqual(req.get_header("Version"), "1")
-            self.positions = []
-            return FakeResponse({"dealReference": "CLOSE_REF_123"})
         self.fail("Unexpected order operation: %s %s" % (method, path))
 
     def invoke(self, phrase="PLACE ONE IG DEMO MINI BUY 0.1", opener=None):
@@ -273,7 +274,9 @@ class FirstIGDemoTradeTests(unittest.TestCase):
             storage_dir=self.directory.name, opener=self.fake_broker,
         )
         self.assertEqual(closed["stage"], "CLOSE_ACKNOWLEDGED")
-        self.assertEqual([method for method, _ in self.calls].count("DELETE"), 1)
+        # Open and close both use HTTP POST, but only CLOSE has method override.
+        self.assertEqual([method for method, _ in self.calls].count("POST"), 2)
+        self.assertEqual([method for method, _ in self.calls].count("DELETE"), 0)
         final = trial.check_first_demo_trade(
             environ=self.env, storage_dir=self.directory.name, opener=self.fake_broker
         )
@@ -292,14 +295,53 @@ class FirstIGDemoTradeTests(unittest.TestCase):
                 phrase="yes", environ=self.env, storage_dir=self.directory.name,
                 opener=self.fake_broker
             )
-        self.assertEqual([method for method, _ in self.calls].count("DELETE"), 0)
+        self.assertEqual([method for method, _ in self.calls].count("POST"), 1)
         self.positions[0]["market"]["epic"] = "CS.D.EURUSD.CEE.IP"
         with self.assertRaisesRegex(trial.IGTrialError, "differs"):
             trial.close_first_demo_trade(
                 phrase="CLOSE MY IG DEMO MINI TRIAL", environ=self.env,
                 storage_dir=self.directory.name, opener=self.fake_broker
             )
-        self.assertEqual([method for method, _ in self.calls].count("DELETE"), 0)
+        self.assertEqual([method for method, _ in self.calls].count("POST"), 1)
+
+    def test_ig_close_override_must_have_exact_trial_payload(self):
+        """Cannot accidentally POST open or close an unrelated broker position."""
+        key, cst, xst = "X", "CST", "XST"
+        for payload in (
+            {"dealId": "OTHER", "direction": "BUY", "size": 0.1, "orderType": "MARKET"},
+            {"dealId": "OTHER", "direction": "SELL", "size": 1.0, "orderType": "MARKET"},
+            {"dealId": "OTHER", "direction": "SELL", "size": 0.1,
+             "orderType": "MARKET", "forceOpen": True},
+            {"dealId": "../bad/ID", "direction": "SELL", "size": 0.1, "orderType": "MARKET"},
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(trial.IGTrialError, "strict trial validation"):
+                    trial._request("DELETE", "/positions/otc", key=key, cst=cst,
+                                   xst=xst, payload=payload, opener=self.fake_broker)
+        self.assertFalse(self.calls)
+
+    def test_manual_ig_close_reconciles_pending_to_closed_without_second_order(self):
+        self.invoke()
+        def rejected_close(req, timeout):
+            self.calls.append((req.get_method(), req.full_url))
+            raise urllib.error.HTTPError(req.full_url, 400, "IG DEMO refused close", {}, None)
+        initial = trial.close_first_demo_trade(
+            phrase="CLOSE MY IG DEMO MINI TRIAL", environ=self.env,
+            storage_dir=self.directory.name, opener=rejected_close,
+        )
+        self.assertEqual(initial["stage"], "CLOSE_PENDING")
+        self.positions = []  # User closed the same demo position manually at IG.
+        closed = trial.check_first_demo_trade(
+            environ=self.env, storage_dir=self.directory.name, opener=self.fake_broker,
+        )
+        self.assertEqual(closed["stage"], "CLOSED")
+        self.assertIn("may have been closed manually", closed["last_note"].lower())
+        self.assertEqual(closed["trades_allowed"], 0)
+        with self.assertRaisesRegex(trial.IGTrialError, "No confirmed"):
+            trial.close_first_demo_trade(
+                phrase="CLOSE MY IG DEMO MINI TRIAL", environ=self.env,
+                storage_dir=self.directory.name, opener=self.fake_broker,
+            )
 
     def test_reject_post_exceptions_without_exposing_credentials(self):
         # Existing journal is never destroyed on HTTP error or failed confirm.
