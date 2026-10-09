@@ -237,6 +237,22 @@ class MobileRuntime:
                                ("action", "score", "confidence", "reason", "stop_pips", "target_pips", "timestamp")}
         return clean_value(out)
 
+    def _feed_probe(self):
+        """Nonblocking live-feed telemetry, safe even during a stuck scan."""
+        feed = self.feed
+        errors = dict(getattr(feed, "_last_error", {}) or {})
+        attempts = dict(getattr(feed, "_last_fetch", {}) or {})
+        histories = getattr(feed, "history", {})
+        inflight = getattr(feed, "_inflight", set())
+        return {
+            "fresh_markets": len(self.engine.snapshots),
+            "failed_fetches": len(errors),
+            "fetch_attempts": len(attempts),
+            "inflight": len(inflight),
+            "candle_histories": sum(len(values) >= 30 for values in histories.values()),
+            "examples": [f"{symbol}: {reason}"[:180] for symbol, reason in list(errors.items())[:6]],
+        }
+
     def state(self):
         # NEVER wait indefinitely for the scanner. The trading thread can be
         # stalled by public quote providers or slow strategy calculations.
@@ -252,7 +268,11 @@ class MobileRuntime:
             stale["state_stale"] = True
             stale["scan_busy_seconds"] = round(max(0.0, elapsed), 1)
             stale["trading_readiness"] = {"ready": False, "fresh": 0, "required": 3,
+                                           "last_scan_age_seconds": None,
                                            "reason": "Scanner busy: PAPER trading start is blocked"}
+            # Cached login must still report ACTUAL provider failures, not
+            # the outdated zero-error snapshot saved before downloads began.
+            stale["feed_diagnostics"] = self._feed_probe()
             stale["status"] = "SCANNER BUSY · showing last known PAPER snapshot"
             if elapsed >= 10 and time.monotonic() - self._lock_warning_at >= 30:
                 self._lock_warning_at = time.monotonic()
@@ -288,10 +308,7 @@ class MobileRuntime:
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
-                "feed_diagnostics": {"fresh_markets": len(e.snapshots),
-                                     "failed_fetches": len(getattr(self.feed, "_last_error", {})),
-                                     "examples": [f"{symbol}: {err}"[:180] for symbol, err in
-                                                  list(getattr(self.feed, "_last_error", {}).items())[:4]]},
+                "feed_diagnostics": self._feed_probe(),
                 "balance": e.balance, "equity": e.equity, "unrealized": e.unrealized_pnl(),
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
