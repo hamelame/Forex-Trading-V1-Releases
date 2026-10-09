@@ -18,6 +18,7 @@ def fresh_paper(items=None, **changes):
         "engine_running": True, "paper_storage_ready": True,
         "market_data_mode": "LIVE", "scan_fresh": True,
         "eurusd_feed_status": "LIVE", "eurusd_feed_age_seconds": 15,
+        "eurusd_bid": 1.12005, "eurusd_ask": 1.12018,
         "paper_positions": list(items or []),
     }
     obj.update(changes)
@@ -314,6 +315,51 @@ class IGDemoAutoTests(unittest.TestCase):
         with self.assertRaisesRegex(IGTrialError, "Daily"):
             self.start()
 
+    def test_divergent_ig_and_paper_quotes_block_before_any_order(self):
+        self.start()
+        self.paper = fresh_paper([position("new-p")], eurusd_bid=1.25,
+                                 eurusd_ask=1.2502)
+        status = self.engine.tick()
+        self.assertFalse(status["armed"])
+        self.assertEqual(status["stage"], "BLOCKED")
+        self.assertEqual(status["attempts_today"], 0)
+        self.assertEqual(len([x for x in self.actions if x[0] == "POST"]), 0)
+
+    def test_readonly_reconcile_finds_manually_closed_position_without_retry(self):
+        self.start()
+        self.paper = fresh_paper([position("one")])
+        opened = self.engine.tick()
+        self.assertEqual(opened["stage"], "OPEN")
+        self.engine.stop(auto.STOP_PHRASE)
+        self.positions = []
+        verified = self.engine.reconcile()
+        self.assertEqual(verified["stage"], "CLOSED")
+        self.assertFalse(verified["armed"])
+        self.assertEqual([m for m,_ in self.actions].count("DELETE"), 0)
+        self.assertEqual([m for m,_ in self.actions].count("POST"), 1)
+
+    def test_readonly_reconcile_does_not_rearm_or_close_open_broker_deal(self):
+        self.start()
+        self.paper = fresh_paper([position("one")])
+        self.engine.tick()
+        before = list(self.actions)
+        verified = self.engine.reconcile()
+        self.assertEqual(verified["stage"], "REVIEW_REQUIRED")
+        self.assertFalse(verified["armed"])
+        self.assertTrue(verified["broker_stop_verified"])
+        self.assertEqual([m for m,_ in self.actions].count("POST"),
+                         [m for m,_ in before].count("POST"))
+        self.assertEqual([m for m,_ in self.actions].count("DELETE"), 0)
+
+    def test_readonly_reconcile_unknown_trade_id_never_claims_closed(self):
+        self.start()
+        self.paper = fresh_paper([position("one")])
+        self.engine.tick()
+        self.engine.state["deal_id"] = None
+        result = self.engine.reconcile()
+        self.assertEqual(result["stage"], "REVIEW_REQUIRED")
+        self.assertFalse(result["armed"])
+
     def test_pending_close_is_not_retried(self):
         self.start()
         self.paper = fresh_paper([position("p1")])
@@ -336,6 +382,7 @@ class IGDemoAutoTests(unittest.TestCase):
             self.assertEqual(client.get("/api/ig-demo/auto/status").status_code, 401)
             self.assertEqual(client.post("/api/ig-demo/auto/start").status_code, 401)
             self.assertEqual(client.post("/api/ig-demo/auto/stop").status_code, 401)
+            self.assertEqual(client.post("/api/ig-demo/auto/refresh").status_code, 401)
             headers = {"Authorization": "Bearer fake-mobile-token-123456"}
             status = client.get("/api/ig-demo/auto/status", headers=headers)
             self.assertEqual(status.status_code, 200)
@@ -353,6 +400,9 @@ class IGDemoAutoTests(unittest.TestCase):
                                 json={"confirm":auto.STOP_PHRASE})
             self.assertEqual(ended.status_code, 200)
             self.assertFalse(ended.get_json()["armed"])
+            read_back = client.post("/api/ig-demo/auto/refresh", headers=headers)
+            self.assertEqual(read_back.status_code, 200)
+            self.assertFalse(read_back.get_json()["armed"])
             paper.assert_not_called()
 
 
