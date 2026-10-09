@@ -1,4 +1,5 @@
 """IG DEMO: cannot place live orders; credentials must never leave Render."""
+import io
 import json
 import unittest
 import urllib.error
@@ -93,6 +94,56 @@ class IGDemoReadOnlyTests(unittest.TestCase):
         self.assertNotIn("TOP SECRET", str(cm.exception))
         for secret in self.secrets.values():
             self.assertNotIn(secret, str(cm.exception))
+
+    def test_known_ig_401_error_is_specific_without_leaking_raw_server_data(self):
+        def reject(req, timeout):
+            body = json.dumps({
+                "errorCode": "error.security.invalid-details",
+                "internalDebug": "PRIVATE: " + self.secrets["IG_DEMO_PASSWORD"]
+            }).encode("utf-8")
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "contains secret " + self.secrets["IG_DEMO_API_KEY"],
+                {}, io.BytesIO(body)
+            )
+        with self.assertRaises(ig_demo.IGDemoError) as cm:
+            ig_demo.check_connection(self.secrets, opener=reject)
+        self.assertIn("username or password", str(cm.exception))
+        for secret in self.secrets.values():
+            self.assertNotIn(secret, str(cm.exception))
+        self.assertNotIn("PRIVATE", str(cm.exception))
+
+    def test_known_ig_403_api_key_error_is_specific_without_leaking_code(self):
+        def reject(req, timeout):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Denied", {},
+                io.BytesIO(b'{"errorCode":"error.security.api-key-invalid"}')
+            )
+        with self.assertRaises(ig_demo.IGDemoError) as cm:
+            ig_demo.check_connection(self.secrets, opener=reject)
+        self.assertEqual("IG DEMO says the API key is invalid.", str(cm.exception))
+
+    def test_unrecognized_response_values_are_never_shown(self):
+        def reject(req, timeout):
+            body = json.dumps({
+                "errorCode": "CUSTOM_" + self.secrets["IG_DEMO_API_KEY"],
+                "message": self.secrets["IG_DEMO_PASSWORD"]
+            }).encode()
+            raise urllib.error.HTTPError(req.full_url, 403, "secret", {}, io.BytesIO(body))
+        with self.assertRaises(ig_demo.IGDemoError) as cm:
+            ig_demo.check_connection(self.secrets, opener=reject)
+        self.assertIn("HTTP 403", str(cm.exception))
+        for secret in self.secrets.values():
+            self.assertNotIn(secret, str(cm.exception))
+
+    def test_ig_pending_agreements_has_specific_action(self):
+        def reject(req, timeout):
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "Denied", {},
+                io.BytesIO(b'{"errorCode":"error.public-api.failure.pending.agreements.required"}')
+            )
+        with self.assertRaises(ig_demo.IGDemoError) as cm:
+            ig_demo.check_connection(self.secrets, opener=reject)
+        self.assertIn("accept agreements", str(cm.exception))
 
     def test_unsupported_endpoints_are_rejected_before_http(self):
         with self.assertRaisesRegex(ig_demo.IGDemoError, "read-only"):
