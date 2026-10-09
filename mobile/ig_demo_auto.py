@@ -171,7 +171,7 @@ def _candidate(snapshot, excluded):
         pid = p.get("id")
         if (not isinstance(pid, str) or not _PAPER_ID.fullmatch(pid)
                 or pid in excluded or p.get("symbol") != "EURUSD"
-                or p.get("side") not in ("BUY", "SELL")):
+                or p.get("side") != "BUY"):
             continue
         opened = p.get("opened_at")
         if not isinstance(opened, str):
@@ -179,7 +179,7 @@ def _candidate(snapshot, excluded):
         try:
             age = (datetime.now(timezone.utc) -
                    datetime.fromisoformat(opened.replace("Z", "+00:00"))).total_seconds()
-        except ValueError:
+        except (ValueError, TypeError):
             continue
         if not 0 <= age <= 180:
             continue
@@ -228,7 +228,10 @@ def _safe_risk(preflight):
     if m.get("epic") != MINI_EPIC or str(m.get("contract_size")) not in ("10000", "10000.0"):
         raise IGTrialError("IG Mini instrument contract changed; AUTO blocked.")
     pip_value = _number(m.get("value_of_one_pip"))
-    spread = _number(m.get("offer")) - _number(m.get("bid"))
+    bid, offer = _number(m.get("bid")), _number(m.get("offer"))
+    if bid is None or offer is None:
+        raise IGTrialError("IG Mini broker bid/offer unavailable.")
+    spread = offer - bid
     if pip_value is None or pip_value <= 0 or pip_value > Decimal("1.01"):
         raise IGTrialError("IG Mini pip value is not verified.")
     if spread <= 0 or spread > MAX_ALLOWED_MARKET_SPREAD:
@@ -503,6 +506,9 @@ class IGDemoAuto:
             # User stopped new entries: keep safety checks and close when
             # PAPER strategy exits this exact trade; never close other trades.
             paper = self.paper_snapshot()
+            if not isinstance(paper, dict) or paper.get("scan_fresh") is not True:
+                # An unavailable PAPER snapshot is NOT an exit signal.
+                return
             ids = {
                 q.get("id") for q in paper.get("paper_positions", [])
                 if isinstance(q, dict)
