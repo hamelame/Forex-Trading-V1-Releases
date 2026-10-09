@@ -79,9 +79,11 @@ function renderQuality(){
  let s=app.state,by={},diag=s.feed_diagnostics||{},ready=s.trading_readiness||{};
  s.markets.forEach(m=>{let key=m.feed_status||'NO DATA';by[key]=(by[key]||0)+1});
  let freshness=ready.ready?'<span class="positive">READY TO TEST</span>':'<span class="gold">WAITING FOR LIVE DATA</span>';
- let details=row('PAPER readiness',freshness,ready.reason||'No scanner results')+
+ let storage=s.paper_storage||{};
+ let details=row('PAPER history storage',storage.persistent?'<span class="positive">PERSISTENT DISK</span>':'<span class="gold">TEMPORARY /tmp</span>',storage.error||((storage.auto_resume_pending?'Resume will wait for live data':'Restart protection requires a mounted disk')))+
+ row('PAPER readiness',freshness,ready.reason||'No scanner results')+
   row('Live market feed',escape((ready.fresh||0)+' / '+(s.symbols?.length||0)+' fresh'),'Required '+(ready.required||3)+' · LIVE only')+
-  row('Scan age',escape(ready.last_scan_age_seconds===null?'Never':num(ready.last_scan_age_seconds||0,1)+' sec'),'Free Render may spin down when idle')+
+  row('Scan age',escape(ready.last_scan_age_seconds===null?'Never':num(ready.last_scan_age_seconds||0,1)+' sec'),'Market scanner freshness')+
   row('LIVE provider progress',escape((diag.fetch_attempts||0)+' attempts · '+(diag.inflight||0)+' pending'),(diag.candle_histories||0)+' markets with candle history · '+(diag.failed_fetches||0)+' provider errors')+
   row('Analysed market snapshots',escape(String(diag.fresh_markets||0)),'No synthetic prices substituted');
  let problems=(diag.examples||[]).map(x=>'<p class="negative">'+escape(x)+'</p>').join('');
