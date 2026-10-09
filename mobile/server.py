@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -136,6 +137,8 @@ class MobileRuntime:
         self._last_feed_warning = 0.0
         self.started_at = utcnow()
         self.worker = None
+        self.watchdog = None
+        self._last_watchdog_warning_at = 0.0
         # Complete immutable-ish JSON-compatible snapshot BEFORE the scan thread
         # starts. HTTP can always return this if the engine lock gets stuck.
         self._last_known_state = None
@@ -145,6 +148,23 @@ class MobileRuntime:
         if start_worker:
             self.worker = threading.Thread(target=self._scan_loop, name="paper-engine", daemon=True)
             self.worker.start()
+            self.watchdog = threading.Thread(target=self._watch_scanner, name="paper-scan-watchdog", daemon=True)
+            self.watchdog.start()
+
+    def _watch_scanner(self):
+        """Log stalled-scan call sites without logging user data or secrets."""
+        while not self.shutdown.wait(7.0):
+            started = self._scan_started_monotonic
+            now = time.monotonic()
+            if started is None or now - started < 18 or now - self._last_watchdog_warning_at < 45:
+                continue
+            self._last_watchdog_warning_at = now
+            frame = sys._current_frames().get(self.worker.ident if self.worker else None)
+            stack = (traceback.extract_stack(frame)[-7:] if frame else [])
+            locations = " > ".join(
+                f"{Path(f.filename).name}:{f.name}:{f.lineno}" for f in stack
+            )
+            logging.warning("PAPER scanner stalled %.1fs; call stack: %s", now - started, locations)
 
     def _scan_loop(self):
         while not self.shutdown.is_set():
