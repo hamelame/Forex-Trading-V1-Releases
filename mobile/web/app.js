@@ -2,7 +2,7 @@
 const $=id=>document.getElementById(id);
 const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','ig-demo','settings'];
 const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality','ig-demo':'IG DEMO Live Test',settings:'Settings'};
-const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0,igMiniReady:false,igDemoTrial:null,igDemoTrialBusy:false,igAuto:null,igAutoBusy:false};
+const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0,igMiniReady:false,igDemoTrial:null,igDemoTrialBusy:false,igAuto:null,igAutoBusy:false,igAutoStartError:''};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v,n=2)=>(Number.isFinite(Number(v))?Number(v).toLocaleString('en-US',{minimumFractionDigits:n,maximumFractionDigits:n}):'—');
 const money=v=>`${Number(v)<0?'-':''}$${num(Math.abs(Number(v)),2)}`;
@@ -101,6 +101,14 @@ function renderIGDemoAuto(){
  const state=$('ig-demo-auto-stage');if(!state)return;
  state.textContent='IG DEMO AUTO: '+stage+(armed?' · ARMED':' · NOT ARMED');
  $('ig-demo-auto-note').textContent=String(p.note||'Start only after verifying that IG DEMO has no open positions.');
+ // Persisted server rejection survives refresh, so the operator can read it
+ // next to Start instead of missing a short toast above the current viewport.
+ const failure=$('ig-demo-auto-start-error');
+ if(failure){
+  const msg=String(app.igAutoStartError||p.last_start_error||'');
+  failure.textContent=msg?'IG DEMO AUTO could not start: '+msg:'';
+  failure.hidden=!msg;
+ }
  const panel=$('ig-demo-auto-stats');
  panel.innerHTML=
   row('Broker & mode','<span class="positive">IG DEMO CFD</span>','No real-money accounts')+
@@ -144,10 +152,15 @@ async function igDemoAutoCommand(action,phrase){
   app.igAuto=await api('/api/ig-demo/auto/'+action,{
    method:'POST',body:JSON.stringify({confirm:phrase})
   });
+  app.igAutoStartError='';
   toast('IG DEMO AUTO: '+String(app.igAuto.stage||'Updated'));
  }catch(err){
-  toast('IG DEMO AUTO: '+String(err.message||err),true);
+  const reason=String(err.message||err);
+  // Keep actionable rejection on this page, even after polling/rendering.
+  if(action==='start')app.igAutoStartError=reason;
+  toast('IG DEMO AUTO: '+reason,true);
   await fetchIGDemoAutoStatus();
+  if(action==='start')$('ig-demo-auto-start-error')?.scrollIntoView({block:'center',behavior:'smooth'});
  }finally{
   app.igAutoBusy=false;renderIGDemoAuto();
  }
