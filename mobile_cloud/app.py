@@ -277,10 +277,24 @@ def ig_demo_auto_start():
     try:
         return jsonify(get_ig_demo_auto().start(values["confirm"]))
     except (IGTrialError, IGDemoError) as exc:
+        # These are our bounded, sanitized messages, never raw credentials
+        # or untrusted broker response data. Render request logs otherwise
+        # show only "HTTP 400", hiding why arming was safely rejected.
+        logging.warning("IG DEMO AUTO start rejected: %s", str(exc))
+        try:
+            get_ig_demo_auto().record_start_rejection(str(exc))
+        except Exception:
+            logging.warning("IG DEMO AUTO could not persist start rejection")
         return jsonify(error=str(exc)), 400
     except Exception:
-        logging.error("IG DEMO AUTO start blocked")
-        return jsonify(error="IG DEMO AUTO start blocked; no order placed"), 503
+        logging.error("IG DEMO AUTO start blocked on unexpected error")
+        try:
+            get_ig_demo_auto().record_start_rejection(
+                "Unexpected IG DEMO AUTO start error; no retry until checked."
+            )
+        except Exception:
+            logging.warning("IG DEMO AUTO could not persist unexpected start error")
+        return jsonify(error="IG DEMO AUTO start blocked; verify status before retrying"), 503
 
 
 @app.route("/api/ig-demo/auto/stop", methods=["POST"])
