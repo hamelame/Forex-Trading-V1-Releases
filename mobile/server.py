@@ -122,6 +122,12 @@ class MobileRuntime:
         self._last_feed_warning = 0.0
         self.started_at = utcnow()
         self.worker = None
+        # Complete immutable-ish JSON-compatible snapshot BEFORE the scan thread
+        # starts. HTTP can always return this if the engine lock gets stuck.
+        self._last_known_state = None
+        self._scan_started_monotonic = None
+        self._lock_warning_at = 0.0
+        self._last_known_state = self.state()
         if start_worker:
             self.worker = threading.Thread(target=self._scan_loop, name="paper-engine", daemon=True)
             self.worker.start()
@@ -129,6 +135,7 @@ class MobileRuntime:
     def _scan_loop(self):
         while not self.shutdown.is_set():
             begin = time.monotonic()
+            self._scan_started_monotonic = begin
             try:
                 with self.lock:
                     self.engine.scan()
@@ -142,6 +149,8 @@ class MobileRuntime:
             except Exception as exc:
                 logging.exception("Engine scan failed")
                 self.last_scan_error = str(exc)[:240]
+            finally:
+                self._scan_started_monotonic = None
             delay = (self.cfg.get("scan_interval_seconds", 2) if self.engine.enabled
                      else self.cfg.get("paused_scan_interval_seconds", 4))
             self.shutdown.wait(max(0.2, float(delay) - (time.monotonic() - begin)))
@@ -168,15 +177,34 @@ class MobileRuntime:
         return clean_value(out)
 
     def state(self):
-        with self.lock:
+        # NEVER wait indefinitely for the scanner. The trading thread can be
+        # stalled by public quote providers or slow strategy calculations.
+        # Return the last fully built snapshot rather than freezing login.
+        acquired = self.lock.acquire(timeout=0.3)
+        if not acquired:
+            snapshot = self._last_known_state
+            if snapshot is None:
+                raise RuntimeError("Trading engine initializing; retry shortly")
+            stale = dict(snapshot)
+            elapsed = (time.monotonic() - self._scan_started_monotonic
+                       if self._scan_started_monotonic is not None else 0.0)
+            stale["state_stale"] = True
+            stale["scan_busy_seconds"] = round(max(0.0, elapsed), 1)
+            stale["status"] = "SCANNER BUSY · showing last known PAPER snapshot"
+            if elapsed >= 10 and time.monotonic() - self._lock_warning_at >= 30:
+                self._lock_warning_at = time.monotonic()
+                logging.warning("Mobile state snapshot returned from cache; trading scan lock busy %.1f sec", elapsed)
+            return stale
+        try:
             e = self.engine
             top = e.top_markets(12)
             ranked = sorted(e.rankings, key=e.rankings.get, reverse=True)
             markets = [self._market(sym) for sym in ranked]
             session_trades = [dict(r) for r in self.db.trades_since(e.session_started_at)[:150]]
             equity_rows = [dict(r) for r in self.db.equity_history_since(e.session_started_at, 160)]
-            return clean_value({
+            result = clean_value({
                 "version": __version__, "paper_only": True, "running": e.enabled,
+                "state_stale": False, "scan_busy_seconds": 0,
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
@@ -199,6 +227,10 @@ class MobileRuntime:
                 "symbols": self.cfg.get("symbols", []),
                 "replays": [dict(r) for r in self.db.recent_trade_replays(75)],
             })
+            self._last_known_state = result
+            return result
+        finally:
+            self.lock.release()
 
     def candles(self, symbol, max_bars=150):
         with self.lock:
