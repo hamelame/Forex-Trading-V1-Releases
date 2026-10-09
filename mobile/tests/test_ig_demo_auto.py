@@ -149,6 +149,63 @@ class IGDemoAutoTests(unittest.TestCase):
     def start(self):
         return self.engine.start(auto.START_PHRASE)
 
+    def test_failed_start_error_persists_and_is_visible_through_status(self):
+        """A rejected start stays visible even after page polling or restart."""
+        from mobile_cloud import app as wsgi
+        self.paper = fresh_paper(engine_running=False)
+        token = "test-demo-operator-token-987654"
+        with patch.object(wsgi, "TOKEN", token), \
+             patch.object(wsgi, "get_ig_demo_auto", return_value=self.engine), \
+             patch.object(wsgi, "get_runtime") as paper_runtime:
+            client = wsgi.app.test_client()
+            headers = {"Authorization": "Bearer " + token}
+            reject = client.post("/api/ig-demo/auto/start", headers=headers,
+                                 json={"confirm": auto.START_PHRASE})
+            self.assertEqual(reject.status_code, 400)
+            expected_reason = reject.get_json()["error"]
+            self.assertIn("PAPER", expected_reason)
+            visible = client.get("/api/ig-demo/auto/status", headers=headers)
+            self.assertEqual(visible.status_code, 200)
+            data = visible.get_json()
+            self.assertEqual(data["last_start_error"], expected_reason)
+            self.assertTrue(data["last_start_error_at"])
+            self.assertFalse(data["armed"])
+            self.assertEqual(data["stage"], "STOPPED")
+            self.assertEqual(data["attempts_today"], 0)
+            self.assertEqual(len(self.actions), 0)
+            paper_runtime.assert_not_called()
+
+        # Durable broker journal, not a short-lived toast or transient UI state.
+        restarted = auto.IGDemoAuto(lambda: self.paper,
+                                    storage_dir=self.temp.name, background=False)
+        self.assertEqual(restarted.status()["last_start_error"], expected_reason)
+        self.assertFalse(restarted.status()["armed"])
+
+        self.paper = fresh_paper()
+        success = self.engine.start(auto.START_PHRASE)
+        self.assertTrue(success["armed"])
+        self.assertEqual(success["stage"], "WATCHING")
+        self.assertIsNone(success["last_start_error"])
+        self.assertIsNone(success["last_start_error_at"])
+
+    def test_preflight_rejection_does_not_relax_broker_constraints(self):
+        """If IG stops allowing market orders, arming remains blocked."""
+        self.preflight["market_candidates"][0]["market_order_preference"] = "NOT_AVAILABLE"
+        from mobile_cloud import app as wsgi
+        token = "test-demo-operator-token-987654"
+        with patch.object(wsgi, "TOKEN", token), \
+             patch.object(wsgi, "get_ig_demo_auto", return_value=self.engine):
+            client = wsgi.app.test_client()
+            headers = {"Authorization": "Bearer " + token}
+            refused = client.post("/api/ig-demo/auto/start", headers=headers,
+                                  json={"confirm": auto.START_PHRASE})
+            self.assertEqual(refused.status_code, 400)
+            result = client.get("/api/ig-demo/auto/status", headers=headers).get_json()
+            self.assertIn("market-order support", result["last_start_error"])
+            self.assertFalse(result["armed"])
+            self.assertEqual(result["attempts_today"], 0)
+            self.assertEqual([x for x in self.actions if x[0] == "POST"], [])
+
     def test_default_disarmed_and_explicit_start_required(self):
         self.assertFalse(self.engine.status()["armed"])
         with self.assertRaisesRegex(IGTrialError, "Explicit"):
