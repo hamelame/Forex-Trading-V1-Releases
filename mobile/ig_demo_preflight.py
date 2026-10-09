@@ -25,6 +25,25 @@ from mobile.ig_demo import (
 _EPIC = re.compile(r"^[A-Za-z0-9._]{6,30}$")
 _MAX_BYTES = 500_000
 
+# Search output differs by IG account / country and can omit instrumentType,
+# return abbreviated EPICs, or use pair slashes. Verify instrument details
+# before displaying a candidate; no execution path is enabled.
+_SEARCH_TERMS = ("EURUSD", "EUR/USD", "EUR")
+_FALLBACK_DETAILS_EPIC = "CS.D.EURUSD.CFD.IP"  # read-only lookup, NOT an order allowlist
+
+
+def _pair_match(*parts):
+    flat = "".join(re.sub(r"[^A-Z0-9]", "", str(p).upper()) for p in parts if p)
+    return "EURUSD" in flat or "EUROUSDOLLAR" in flat or (
+        "EURO" in flat and "USDOLLAR" in flat
+    )
+
+
+def _search_path(term):
+    if term not in _SEARCH_TERMS:
+        raise IGDemoError("Unsupported IG DEMO market search.")
+    return "/markets?searchTerm=" + urllib.parse.quote(term, safe="")
+
 
 def _finite_number(value):
     if type(value) not in (int, float):
@@ -43,12 +62,11 @@ def _rule(value):
 
 def _read_only_get(path, *, key, cst, xst, version=1, opener=None):
     """Strict path allowlist: never permits any HTTP method except GET."""
-    if path != "/positions" and not path.startswith("/markets?searchTerm=") and not path.startswith("/markets/"):
+    allowed_searches = {_search_path(term) for term in _SEARCH_TERMS}
+    if path != "/positions" and path not in allowed_searches and not path.startswith("/markets/"):
         raise IGDemoError("IG DEMO preflight supports read-only endpoints only.")
     if path.startswith("/markets/") and not _EPIC.fullmatch(path.removeprefix("/markets/")):
         raise IGDemoError("Invalid market EPIC.")
-    if path.startswith("/markets?searchTerm=") and path != "/markets?searchTerm=EURUSD":
-        raise IGDemoError("IG DEMO market search term is not allowed.")
     if path == "/positions" and version != 2:
         raise IGDemoError("Invalid positions API version.")
     if path.startswith("/markets?") and version != 1:
@@ -136,41 +154,79 @@ def preview(environ=None, opener=None):
     if not isinstance(open_rows, list):
         raise IGDemoError("IG DEMO did not return a usable positions list.")
 
-    candidates = _read_only_get(
-        "/markets?searchTerm=EURUSD", key=key, cst=cst, xst=xst,
-        version=1, opener=opener
-    ).get("markets")
-    if not isinstance(candidates, list):
-        raise IGDemoError("IG DEMO did not return instrument search results.")
+    # IG's market search is not guaranteed to index a pair the same way
+    # across accounts. Try exact ticker, slash notation, then a short term.
+    # Preserve bounded read-only traffic and reveal only aggregate counts.
+    diagnostics = []
+    found = {}
+    for term in _SEARCH_TERMS:
+        rows = _read_only_get(
+            _search_path(term), key=key, cst=cst, xst=xst,
+            version=1, opener=opener
+        ).get("markets")
+        if not isinstance(rows, list):
+            raise IGDemoError("IG DEMO did not return a usable market search list.")
+        matches = 0
+        for row in rows[:100]:
+            if not isinstance(row, dict):
+                continue
+            epic = row.get("epic")
+            declared_type = row.get("instrumentType")
+            if declared_type not in (None, "CURRENCIES"):
+                continue
+            if not isinstance(epic, str) or not _EPIC.fullmatch(epic):
+                continue
+            if not _pair_match(epic, row.get("instrumentName"), row.get("name")):
+                continue
+            matches += 1
+            found.setdefault(epic, {"epic": epic, "name": row.get("instrumentName", ""), "source": "market search"})
+        diagnostics.append({"term": term, "results": len(rows), "pair_matches": matches})
+        if found:
+            break
 
-    # Only IG CFD forex EPICs are relevant; no betting products or knockouts.
-    filtered = [
-        row for row in candidates
-        if isinstance(row, dict)
-        and row.get("instrumentType") == "CURRENCIES"
-        and isinstance(row.get("epic"), str)
-        and _EPIC.fullmatch(row["epic"])
-        and ".CFD." in row["epic"].upper()
-        and "EURUSD" in row["epic"].upper()
-    ]
-    filtered = filtered[:3]
     details = []
-    for row in filtered:
-        epic = row["epic"]
-        raw = _read_only_get(
-            "/markets/" + epic, key=key, cst=cst, xst=xst,
-            version=3, opener=opener
-        )
+    # Known public EUR/USD CFD EPIC is a *read-only detail probe* when
+    # search doesn't work. It cannot become an execution instruction.
+    if not found:
+        found[_FALLBACK_DETAILS_EPIC] = {
+            "epic": _FALLBACK_DETAILS_EPIC, "name": "EUR/USD",
+            "source": "read-only EPIC lookup",
+        }
+    for epic, row in list(found.items())[:3]:
+        try:
+            raw = _read_only_get(
+                "/markets/" + epic, key=key, cst=cst, xst=xst,
+                version=3, opener=opener
+            )
+        except IGDemoError as exc:
+            # Some IG accounts don't list the public example EPIC.
+            # 404 here means "unavailable to this account", not a dealable
+            # instrument. Other failures must not be silently ignored.
+            if epic == _FALLBACK_DETAILS_EPIC and "HTTP 404" in str(exc):
+                continue
+            raise
         ins = raw.get("instrument") or {}
         snap = raw.get("snapshot") or {}
         rules = raw.get("dealingRules") or {}
-        currencies = ins.get("currencies") or []
         if not isinstance(ins, dict) or not isinstance(snap, dict) or not isinstance(rules, dict):
             continue
+        actual_epic = ins.get("epic")
+        if actual_epic is not None and actual_epic != epic:
+            continue
+        # Instrument detail TYPE is authoritative: never accept binaries,
+        # knockouts, options or other leveraged instrument categories.
+        if ins.get("type") != "CURRENCIES":
+            continue
+        if not _pair_match(epic, ins.get("name"), ins.get("chartCode")):
+            continue
+        currencies = ins.get("currencies")
+        if not isinstance(currencies, list):
+            currencies = []
         details.append({
             "symbol": "EURUSD",
             "epic": epic,
-            "name": str(ins.get("name", row.get("instrumentName", "")))[:60],
+            "source": row["source"],
+            "name": str(ins.get("name", row.get("name", "")))[:60],
             "type": str(ins.get("type", ""))[:30],
             "expiry": str(ins.get("expiry", ""))[:30],
             "status": str(snap.get("marketStatus", ""))[:30],
@@ -205,6 +261,8 @@ def preview(environ=None, opener=None):
         "existing_ig_positions": len(open_rows),
         "market": "EURUSD",
         "market_candidates": details,
+        "search_diagnostics": diagnostics,
+        "instrument_verified": bool(details),
         "blocked_reason": (
             "First review IG's minimum trade size, stop distance and CFD EPIC. "
             "Existing IG positions must be reconciled. No automatic DEMO orders "
