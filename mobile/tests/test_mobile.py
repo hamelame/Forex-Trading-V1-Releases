@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from mobile.server import MobileRuntime, Server
 from forex_app.market import SyntheticFeed
@@ -119,6 +120,56 @@ class MobileBridgeTests(unittest.TestCase):
         self.assertEqual(self.runtime.session_start_capital,25000)
         self.assertTrue(self.settings.exists())
         self.assertEqual(json.loads(self.settings.read_text())['max_open_positions'],4)
+
+    def test_paper_readiness_uses_live_provider_and_fresh_scan(self):
+        """LIVE trading is never allowed with empty, stale, or synthetic prices."""
+        root = Path(self.tmp.name)
+        cfg = json.loads(self.config.read_text())
+        cfg["market_data_mode"] = "LIVE"
+        cfg_path = root / 'live-test.json'
+        cfg_path.write_text(json.dumps(cfg), encoding='utf-8')
+        runtime = MobileRuntime(config_path=cfg_path, db_path=root/'live-test.sqlite',
+                                feed=SyntheticFeed(cfg["symbols"]), start_worker=False)
+        try:
+            self.assertTrue(runtime.staged_paper_test)
+            self.assertEqual(runtime.full_symbol_count, 3)
+            self.assertFalse(runtime.trading_readiness()["ready"])
+            with self.assertRaisesRegex(ValueError, "PAPER start blocked"):
+                runtime.command('start', {})
+            self.assertFalse(runtime.engine.enabled)
+            runtime.last_scan_completed_at = time.monotonic()
+            runtime.engine.snapshots = {symbol: SimpleNamespace(feed_status="LIVE", data_age_seconds=20)
+                                        for symbol in cfg["symbols"]}
+            self.assertTrue(runtime.trading_readiness()["ready"])
+            runtime.engine.snapshots["EURUSD"].data_age_seconds = 10000
+            self.assertFalse(runtime.trading_readiness()["ready"])
+            runtime.engine.snapshots["EURUSD"].data_age_seconds = 20
+            runtime.last_scan_completed_at = time.monotonic() - 300
+            self.assertFalse(runtime.trading_readiness()["ready"])
+        finally:
+            runtime.close()
+
+    def test_mobile_start_does_not_hang_behind_scanner(self):
+        """HTTP controls fail quickly when a background scan holds the engine lock."""
+        release = threading.Event()
+        acquired = threading.Event()
+
+        def busy():
+            with self.runtime.lock:
+                acquired.set()
+                release.wait(3)
+        thread = threading.Thread(target=busy, daemon=True)
+        thread.start()
+        self.assertTrue(acquired.wait(1.0))
+        try:
+            begin = time.monotonic()
+            status, data = self.req('POST', '/api/command/start', {})
+            self.assertEqual(status, 400)
+            self.assertIn('Scanner busy', data["error"])
+            self.assertLess(time.monotonic() - begin, 1.8)
+        finally:
+            release.set()
+            thread.join(timeout=2)
 
     def test_market_chart_and_replay_validation(self):
         code,data=self.req('GET','/api/candles?symbol=UNKNOWN')
