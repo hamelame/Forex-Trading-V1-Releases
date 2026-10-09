@@ -16,6 +16,7 @@ on:
       - mobile-ig-demo-close-override-fix-20261009
       - mobile-ig-demo-risk-half-percent-20261009
       - mobile-ig-demo-auto-staged-20261009
+      - mobile-ig-auto-persistent-start-errors-20261009
   workflow_dispatch:
 jobs:
   mobile-tests:
