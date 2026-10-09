@@ -304,7 +304,12 @@ class IGDemoAuto:
                 raise IGTrialError("Daily IG DEMO AUTO rollout limit reached.")
             paper = self.paper_snapshot()
             if not _paper_ready(paper):
-                raise IGTrialError("PAPER AI or live EURUSD feed not ready; AUTO cannot start.")
+                raise IGTrialError("PAPER AI or durable PAPER storage not ready; AUTO cannot start.")
+            if paper.get("eurusd_feed_status") != "LIVE":
+                raise IGTrialError("EURUSD PAPER market feed is not LIVE; AUTO cannot start.")
+            feed_age = _number(paper.get("eurusd_feed_age_seconds"))
+            if feed_age is None or feed_age < 0 or feed_age > 120:
+                raise IGTrialError("EURUSD PAPER market data is stale; AUTO cannot start.")
             p = preview()
             budget, planned = _safe_risk(p)
             if p.get("existing_ig_positions") != 0:
