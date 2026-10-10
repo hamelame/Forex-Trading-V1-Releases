@@ -1,6 +1,7 @@
 """Mobile-only 24/7 PAPER crypto candle fallback, no broker orders.
 
-Mobile's small Render instance uses the PC AI strategy unchanged. For BTC/ETH,
+Mobile's small Render instance uses the PC AI strategy unchanged. For a
+bounded liquid-crypto test universe (BTC/ETH/SOL/XRP/LINK/ADA/LTC/AVAX),
 the public Kraken and Coinbase candle APIs provide alternative 1m LIVE data if
 Binance/Yahoo are unreachable. This layer NEVER substitutes stale or synthetic
 prices, and it is enabled only on the mobile service.
@@ -15,8 +16,18 @@ from datetime import datetime, timezone
 from forex_app.instruments import instrument_meta
 from forex_app.live_market import LiveMarketFeed
 
-_KRAKEN_PAIRS = {"BTCUSD": "XBTUSD", "ETHUSD": "ETHUSD"}
-_COINBASE_PAIRS = {"BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD"}
+# Mobile-only allowlist. This is intentionally not the 32-coin PC universe:
+# bounded requests keep the Render 512-MB worker responsive.
+_KRAKEN_PAIRS = {
+    "BTCUSD": "XBTUSD", "ETHUSD": "ETHUSD", "SOLUSD": "SOLUSD",
+    "XRPUSD": "XRPUSD", "LINKUSD": "LINKUSD", "ADAUSD": "ADAUSD",
+    "LTCUSD": "LTCUSD", "AVAXUSD": "AVAXUSD",
+}
+_COINBASE_PAIRS = {
+    "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
+    "XRPUSD": "XRP-USD", "LINKUSD": "LINK-USD", "ADAUSD": "ADA-USD",
+    "LTCUSD": "LTC-USD", "AVAXUSD": "AVAX-USD",
+}
 
 
 def _validated_ohlc(rows, provider, *, source_order):
@@ -68,7 +79,7 @@ def _validated_ohlc(rows, provider, *, source_order):
 
 
 class MobileLiveMarketFeed(LiveMarketFeed):
-    """Retain original FX/metals/indices logic; improve mobile BTC/ETH only."""
+    """Retain original FX/metals/indices logic; mobile liquid-crypto feed only."""
 
     def _fetch_kraken(self, symbol):
         pair = _KRAKEN_PAIRS.get(symbol)
