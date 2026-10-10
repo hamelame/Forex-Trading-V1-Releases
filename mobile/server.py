@@ -25,6 +25,7 @@ from forex_app import __version__
 from forex_app.database import Database
 from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
+from forex_app.feed_display import display_feed_status
 from forex_app.market import SyntheticFeed
 from mobile.crypto_feed import MobileLiveMarketFeed
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
@@ -386,6 +387,27 @@ class MobileRuntime:
                                ("action", "score", "confidence", "reason", "stop_pips", "target_pips", "timestamp")}
         return clean_value(out)
 
+    def _feed_display(self):
+        """Informational labels only; do not alter engine snapshots or gates."""
+        probe = getattr(self.feed, "feed_status", None)
+        out = {}
+        for symbol in self.cfg["symbols"]:
+            if callable(probe):
+                try:
+                    raw = probe(symbol) or {}
+                    if not isinstance(raw, dict):
+                        raw = {}
+                except Exception:
+                    raw = {"status": "NO DATA", "error": "Provider unavailable"}
+            else:
+                snap = self.engine.snapshots.get(symbol)
+                raw = {"status": getattr(snap, "feed_status", "NO DATA") if snap else "NO DATA"}
+            out[symbol] = display_feed_status(
+                symbol, raw.get("status"),
+                raw.get("age_seconds"), raw.get("error"),
+            )
+        return out
+
     def _feed_probe(self):
         """Nonblocking live-feed telemetry, safe even during a stuck scan."""
         feed = self.feed
@@ -464,6 +486,7 @@ class MobileRuntime:
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
                 "feed_diagnostics": self._feed_probe(),
+                "feed_display": self._feed_display(),
                 "balance": e.balance, "equity": e.equity, "unrealized": e.unrealized_pnl(),
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
