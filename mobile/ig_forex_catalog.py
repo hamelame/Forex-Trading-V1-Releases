@@ -118,6 +118,7 @@ def assess_market(symbol, epic, response):
         "contract_size": contract,
         "pip_value": pip_value,
         "one_pip_means": one_pip,
+        "scaling_factor": _positive(snap.get("scalingFactor")),
         "settlement_currencies": payout,
         "bid": bid,
         "offer": offer,
