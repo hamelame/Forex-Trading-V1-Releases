@@ -47,6 +47,13 @@
       <div id="ig-demo-live-results"></div>
     </div>
     <div class="panel">
+      <div class="panel-head"><h2>IG DEMO Forex Catalogue</h2><span class="pill">READ ONLY</span></div>
+      <p class="muted">Check the complete PC forex universe against your IG DEMO CFD account, including NOK crosses. Only 3 pairs are searched per tap to avoid API rate limits. Results are informational: multi-FX broker orders remain disabled until per-instrument risk/contract verification is complete.</p>
+      <button id="ig-forex-catalogue-next" class="soft full" type="button">Check first 3 Forex pairs</button>
+      <p id="ig-forex-catalogue-progress" class="muted">Waiting for explicit read-only request.</p>
+      <div id="ig-forex-catalogue-list"></div>
+    </div>
+    <div class="panel">
       <div class="panel-head"><h2>First Virtual Trade</h2><span class="pill">MANUAL TEST ONLY</span></div>
       <p class="muted">One-time EUR/USD Mini broker test, NOT an AI signal. IG DEMO only. Order: BUY 0.1 Mini, attached stop-loss 20 IG points and take-profit 40 IG points. Broker rules, margin and spread are checked again at execution. Standard stops can slip.</p>
       <div id="ig-demo-trial-stage" class="muted">Loading durable trial state…</div>
@@ -71,4 +78,4 @@
  <div id="more-menu" class="more-menu" hidden><button data-page="decisions">AI Decision Feed</button><button data-page="replay">Trade Replay</button><button data-page="performance">Performance Lab</button><button data-page="shadow">Shadow Lab</button><button data-page="ig-demo">IG DEMO Live Test</button><button data-page="quality">Data Quality & Risk</button></div>
 </div>
 <div id="confirm" class="modal" hidden><div class="modal-box"><h2 id="confirm-title">Confirm</h2><p id="confirm-message"></p><div class="actions"><button id="confirm-cancel" class="soft">Cancel</button><button id="confirm-ok" class="warn">Confirm</button></div></div></div>
-<script src="/app.js?v=crypto-8-markets-paper-20261010" defer></script></body></html>
+<script src="/app.js?v=ig-forex-catalogue-paper-20261010" defer></script></body></html>
