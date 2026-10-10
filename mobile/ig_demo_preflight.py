@@ -23,6 +23,7 @@ from mobile.ig_demo import (
 )
 
 from mobile.ig_demo_risk import policy as demo_risk_policy
+from forex_app.instruments import FX_SYMBOLS
 
 _EPIC = re.compile(r"^[A-Za-z0-9._]{6,30}$")
 _MAX_BYTES = 500_000
@@ -62,9 +63,15 @@ def _rule(value):
     }
 
 
-def _read_only_get(path, *, key, cst, xst, version=1, opener=None):
+def _read_only_get(path, *, key, cst, xst, version=1, opener=None, allowed_fx_symbol=None):
     """Strict path allowlist: never permits any HTTP method except GET."""
     allowed_searches = {_search_path(term) for term in _SEARCH_TERMS}
+    # Only the bounded read-only FX catalogue passes this parameter.
+    # Default EURUSD trial preflight remains unchanged.
+    if allowed_fx_symbol is not None:
+        if not isinstance(allowed_fx_symbol, str) or allowed_fx_symbol not in FX_SYMBOLS:
+            raise IGDemoError("Unsupported forex market catalogue symbol.")
+        allowed_searches.add("/markets?searchTerm=" + allowed_fx_symbol)
     if path != "/positions" and path not in allowed_searches and not path.startswith("/markets/"):
         raise IGDemoError("IG DEMO preflight supports read-only endpoints only.")
     if path.startswith("/markets/") and not _EPIC.fullmatch(path.removeprefix("/markets/")):
