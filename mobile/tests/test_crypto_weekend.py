@@ -124,8 +124,10 @@ class MobileWeekendCryptoTests(unittest.TestCase):
 
     def test_ig_forex_demo_does_not_rearm_using_fridays_cached_fx_snapshot(self):
         """Crypto-ready PAPER does not make stale EURUSD eligible for IG."""
-        from mobile_cloud import app as wsgi
+        import os
         import threading
+        with patch.dict(os.environ, {"FX_MOBILE_TOKEN": "local-crypto-test-token-123456"}):
+            from mobile_cloud import app as wsgi
         rt = SimpleNamespace(
             lock=threading.RLock(), last_scan_completed_at=time.monotonic(),
             engine=SimpleNamespace(
