@@ -20,6 +20,7 @@ on:
       - mobile-paper-start-feedback-20261009
       - mobile-crypto-weekend-paper-20261010
       - mobile-crypto-expansion-paper-20261010
+      - mobile-pc-feed-status-labels-20261010
   workflow_dispatch:
 jobs:
   mobile-tests:
@@ -37,4 +38,4 @@ jobs:
       - name: Check browser JavaScript syntax
         run: node --check mobile/web/app.js
       - name: Compile modified Python modules
-        run: python -m py_compile mobile/server.py mobile/crypto_feed.py mobile_cloud/app.py mobile/ig_demo.py mobile/ig_demo_preflight.py mobile/ig_demo_trial.py mobile/ig_demo_risk.py mobile/ig_demo_auto.py forex_app/live_market.py
+        run: python -m py_compile mobile/server.py mobile/crypto_feed.py mobile_cloud/app.py mobile/ig_demo.py mobile/ig_demo_preflight.py mobile/ig_demo_trial.py mobile/ig_demo_risk.py mobile/ig_demo_auto.py forex_app/live_market.py forex_app/feed_display.py forex_app/ui.py
