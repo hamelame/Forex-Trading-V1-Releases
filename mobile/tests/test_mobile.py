@@ -145,12 +145,15 @@ class MobileBridgeTests(unittest.TestCase):
             runtime.last_scan_completed_at = time.monotonic()
             runtime.engine.snapshots = {symbol: SimpleNamespace(feed_status="LIVE", data_age_seconds=20)
                                         for symbol in cfg["symbols"]}
-            self.assertTrue(runtime.trading_readiness()["ready"])
-            runtime.engine.snapshots["EURUSD"].data_age_seconds = 10000
-            self.assertFalse(runtime.trading_readiness()["ready"])
-            runtime.engine.snapshots["EURUSD"].data_age_seconds = 20
-            runtime.last_scan_completed_at = time.monotonic() - 300
-            self.assertFalse(runtime.trading_readiness()["ready"])
+            # This test checks the LIVE-feed gate on a simulated open market
+            # day; weekends have a separate strict no-FX-entry regression.
+            with patch("mobile.server._non_crypto_session_open", return_value=True):
+                self.assertTrue(runtime.trading_readiness()["ready"])
+                runtime.engine.snapshots["EURUSD"].data_age_seconds = 10000
+                self.assertFalse(runtime.trading_readiness()["ready"])
+                runtime.engine.snapshots["EURUSD"].data_age_seconds = 20
+                runtime.last_scan_completed_at = time.monotonic() - 300
+                self.assertFalse(runtime.trading_readiness()["ready"])
         finally:
             runtime.close()
 
