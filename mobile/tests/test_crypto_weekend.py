@@ -15,8 +15,10 @@ from unittest.mock import patch
 
 from forex_app.engine import TradingEngine
 from forex_app.live_market import LiveMarketFeed
-from mobile.crypto_feed import MobileLiveMarketFeed, _validated_ohlc
-from mobile.server import MobileRuntime
+from mobile.crypto_feed import (
+    MobileLiveMarketFeed, _validated_ohlc, _KRAKEN_PAIRS, _COINBASE_PAIRS,
+)
+from mobile.server import MobileRuntime, _non_crypto_session_open
 
 
 def snapshot(symbol, *, seconds_ago=45, reported_age=8, live=True):
@@ -89,10 +91,75 @@ class MobileWeekendCryptoTests(unittest.TestCase):
             "GBPUSD": snapshot("GBPUSD"),
             "BTCUSD": snapshot("BTCUSD"),
         }
-        result = self.runtime.trading_readiness()
+        with patch("mobile.server._non_crypto_session_open", return_value=True):
+            result = self.runtime.trading_readiness()
         self.assertTrue(result["ready"])
         self.assertEqual(result["scope"], "MULTI_MARKET")
         self.assertEqual(result["required"], 3)
+
+
+    def test_eight_approved_crypto_markets_and_twenty_total_are_mobile_only(self):
+        # The shared full PC config is read but never rewritten.
+        config_file = Path(__file__).resolve().parents[2] / "config.json"
+        before = config_file.read_bytes()
+        with patch.dict("os.environ", {"FX_MOBILE_TEST_FULL_UNIVERSE": "0"}):
+            runtime = MobileRuntime(config_path=config_file, db_path=Path(self.tmp.name) / "full.sqlite",
+                                    feed=SimpleNamespace(), start_worker=False)
+            try:
+                self.assertEqual(runtime.full_symbol_count, 140)
+                self.assertEqual(len(runtime.cfg["symbols"]), 20)
+                symbols = runtime.cfg["symbols"]
+                cryptos = [s for s in symbols if s in _KRAKEN_PAIRS]
+                self.assertEqual(cryptos, [
+                    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
+                    "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
+                ])
+                for old in ("XAUUSD", "XAGUSD", "EURUSD"):
+                    self.assertIn(old, symbols)
+                for excluded in ("DOGEUSD", "PEPEUSD", "SHIBUSD"):
+                    self.assertNotIn(excluded, symbols)
+            finally:
+                runtime.close()
+        self.assertEqual(config_file.read_bytes(), before)
+
+    def test_four_fresh_crypto_cannot_reopen_noncrypto_markets_on_weekend(self):
+        self.completed_scan()
+        # A third live crypto formerly made all assets appear MULTI_MARKET.
+        self.runtime.cfg["symbols"].extend(["SOLUSD", "XRPUSD"])
+        self.runtime.engine.snapshots = {
+            symbol: snapshot(symbol)
+            for symbol in ("BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "XAUUSD", "EURUSD")
+        }
+        with patch("mobile.server._non_crypto_session_open", return_value=False):
+            ready = self.runtime.trading_readiness()
+            self.assertTrue(ready["ready"])
+            self.assertEqual(ready["scope"], "CRYPTO_ONLY")
+            self.runtime.engine.entry_asset_scope = ready["scope"]
+            with patch.object(TradingEngine, "_open", return_value="paper") as parent:
+                self.assertIsNone(self.runtime.engine._open(None, SimpleNamespace(symbol="XAUUSD")))
+                self.assertIsNone(self.runtime.engine._open(None, SimpleNamespace(symbol="EURUSD")))
+                self.assertEqual(self.runtime.engine._open(None, SimpleNamespace(symbol="SOLUSD")), "paper")
+                parent.assert_called_once()
+
+    def test_three_crypto_alone_never_create_multi_market_readiness(self):
+        self.completed_scan()
+        self.runtime.cfg["symbols"].append("SOLUSD")
+        self.runtime.engine.snapshots = {
+            symbol: snapshot(symbol) for symbol in ("BTCUSD", "ETHUSD", "SOLUSD")
+        }
+        with patch("mobile.server._non_crypto_session_open", return_value=True):
+            ready = self.runtime.trading_readiness()
+        self.assertEqual(ready["scope"], "CRYPTO_ONLY")
+        self.assertEqual(ready["fresh_crypto"], 3)
+
+    def test_noncrypto_weekend_gate_tracks_new_york_close_and_open(self):
+        def clock(d, h):
+            return datetime(2026, 10, d, h, tzinfo=timezone.utc)
+        self.assertTrue(_non_crypto_session_open(clock(9, 20)))  # Fri 16:00 NY
+        self.assertFalse(_non_crypto_session_open(clock(9, 21)))  # Fri 17:00 NY
+        self.assertFalse(_non_crypto_session_open(clock(10, 18)))  # Saturday
+        self.assertFalse(_non_crypto_session_open(clock(11, 20)))  # Sun 16:00 NY
+        self.assertTrue(_non_crypto_session_open(clock(11, 21)))  # Sun 17:00 NY
 
     def test_stale_candle_timestamp_blocks_despite_cached_age(self):
         self.completed_scan()
@@ -157,7 +224,7 @@ class MobileWeekendCryptoTests(unittest.TestCase):
 
 class PublicCryptoFallbackTests(unittest.TestCase):
     def make_feed(self):
-        f = MobileLiveMarketFeed(["BTCUSD", "ETHUSD"])
+        f = MobileLiveMarketFeed(list(_KRAKEN_PAIRS))
         self.addCleanup(f._executor.shutdown, wait=False)
         return f
 
@@ -168,6 +235,35 @@ class PublicCryptoFallbackTests(unittest.TestCase):
             start = end - (count - 1) * 60
         return [[start + i * 60, "100.0", "105.0", "95.0", "101.0", "100", "8", 8]
                 for i in range(count)]
+
+
+    def test_all_eight_have_independent_usd_candle_sources(self):
+        expected = {
+            "BTCUSD": ("XBTUSD", "BTC-USD"),
+            "ETHUSD": ("ETHUSD", "ETH-USD"),
+            "SOLUSD": ("SOLUSD", "SOL-USD"),
+            "XRPUSD": ("XRPUSD", "XRP-USD"),
+            "LINKUSD": ("LINKUSD", "LINK-USD"),
+            "ADAUSD": ("ADAUSD", "ADA-USD"),
+            "LTCUSD": ("LTCUSD", "LTC-USD"),
+            "AVAXUSD": ("AVAXUSD", "AVAX-USD"),
+        }
+        for symbol, (kraken, coinbase) in expected.items():
+            with self.subTest(symbol=symbol):
+                self.assertEqual(_KRAKEN_PAIRS[symbol], kraken)
+                self.assertEqual(_COINBASE_PAIRS[symbol], coinbase)
+                feed = self.make_feed()
+                urls = []
+                def provider(url):
+                    urls.append(url)
+                    if "kraken.com" in url:
+                        return {"error": [], "result": {"PAIR": self.bars(75), "last": 123}}
+                    return [[a[0], a[3], a[2], a[1], a[4], 1] for a in self.bars(75)]
+                feed._get_json = provider
+                self.assertEqual(feed._fetch_kraken(symbol)[5], "KRAKEN PUBLIC 1M")
+                self.assertEqual(feed._fetch_coinbase(symbol)[5], "COINBASE PUBLIC 1M")
+                self.assertIn("pair=" + kraken, urls[0])
+                self.assertIn("/" + coinbase + "/candles?", urls[1])
 
     def test_kraken_public_ohlc_parses_prices_in_correct_order(self):
         f = self.make_feed()
