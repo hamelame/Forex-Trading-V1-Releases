@@ -122,6 +122,30 @@ class MobileWeekendCryptoTests(unittest.TestCase):
             self.assertIsNone(engine._open(SimpleNamespace(), SimpleNamespace(symbol="BTCUSD")))
             real_open.assert_not_called()
 
+    def test_ig_forex_demo_does_not_rearm_using_fridays_cached_fx_snapshot(self):
+        """Crypto-ready PAPER does not make stale EURUSD eligible for IG."""
+        from mobile_cloud import app as wsgi
+        import threading
+        rt = SimpleNamespace(
+            lock=threading.RLock(), last_scan_completed_at=time.monotonic(),
+            engine=SimpleNamespace(
+                enabled=True,
+                positions=[],
+                snapshots={
+                    "EURUSD": snapshot("EURUSD", seconds_ago=24 * 3600, reported_age=10)
+                },
+            ),
+            cfg={"market_data_mode": "LIVE", "live_data_stale_seconds": 180},
+            durable=True, persistence_error=None, last_scan_error=None,
+        )
+        with patch.object(wsgi, "get_runtime", return_value=rt):
+            result = wsgi.ig_auto_paper_snapshot()
+        self.assertTrue(result["engine_running"])
+        self.assertTrue(result["paper_storage_ready"])
+        self.assertTrue(result["scan_fresh"])
+        self.assertEqual(result["eurusd_feed_status"], "STALE")
+        self.assertGreater(result["eurusd_feed_age_seconds"], 120)
+
     def test_staged_universe_keeps_btc_and_eth_but_not_all_pc_symbols(self):
         self.assertTrue(self.runtime.staged_paper_test)
         self.assertEqual(self.runtime.full_symbol_count, 5)  # isolated fixture
