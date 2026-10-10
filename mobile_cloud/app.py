@@ -24,6 +24,7 @@ from mobile.server import MobileRuntime, WEB, MAX_BODY, clean_value
 from mobile.ig_demo import IGDemoError, status as ig_demo_status, check_connection as ig_demo_check
 from mobile.ig_demo_preflight import preview as ig_demo_preflight
 from mobile.ig_demo_risk import policy as ig_demo_risk_policy
+from mobile.ig_forex_catalog import preview_forex_page
 from mobile.ig_demo_auto import (
     IGDemoAuto, START_PHRASE as IG_AUTO_START_PHRASE,
     STOP_PHRASE as IG_AUTO_STOP_PHRASE,
@@ -344,6 +345,29 @@ def ig_demo_risk_policy_view():
         return jsonify(error="Access token required"), 401
     # Not a trading endpoint; no network calls, no PAPER engine access.
     return jsonify(ig_demo_risk_policy())
+
+
+@app.route("/api/ig-demo/forex/catalog", methods=["POST"])
+def ig_demo_forex_catalog_view():
+    # Explicit read-only multi-FX lookup, never arms or submits an IG order.
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    if request.mimetype != "application/json":
+        return jsonify(error="JSON required"), 415
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or set(values) != {"offset", "limit"}:
+        return jsonify(error="Forex catalogue page offset and limit required"), 400
+    if type(values["offset"]) is not int or type(values["limit"]) is not int:
+        return jsonify(error="Invalid forex catalogue paging"), 400
+    try:
+        return jsonify(preview_forex_page(
+            offset=values["offset"], limit=values["limit"],
+        ))
+    except (IGDemoError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.error("IG DEMO forex read-only catalogue unavailable")
+        return jsonify(error="IG DEMO forex catalogue unavailable"), 503
 
 
 @app.route("/api/ig-demo/preflight", methods=["POST"])
