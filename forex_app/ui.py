@@ -6,6 +6,7 @@ from pathlib import Path
 from . import __version__
 from .updater import Updater
 from .instruments import instrument_meta, display_name, instrument_spec
+from .feed_display import display_feed_status
 from .release_channel import get_release_channel, save_github_channel
 
 BG="#050a10"
@@ -1922,7 +1923,7 @@ class App:
 
         self.qual=self.tree(q,[
             ("INSTRUMENT",320),("CLASS",88),("QUALITY",90),("SPREAD",90),
-            ("COST",100),("REGIME",105),("UPDATED",95),("HEALTH",120)
+            ("COST",100),("REGIME",105),("UPDATED",95),("FEED / HEALTH",155)
         ],"qual",horizontal=False)
 
     def _ui_state_path(self):
@@ -2333,7 +2334,22 @@ class App:
         if not raw:
             return "AI STATUS · Waiting for market data."
         low=raw.lower()
-
+        # Presentation only: LIVE-candle age checks and position safeguards
+        # remain exclusively inside the original trading engine/feed.
+        if "stale data" in low and ("data error:" in low or "data refresh error:" in low):
+            symbol=raw.split(":",1)[0].strip()
+            if symbol in self.cfg.get("symbols", []):
+                fn=getattr(self.engine.feed,"feed_status",None)
+                try:
+                    info=fn(symbol) if callable(fn) else {}
+                    display=display_feed_status(symbol,info.get("status"),
+                                                info.get("age_seconds"),info.get("error"))
+                    if display["status"]=="MARKET CLOSED":
+                        return f"AI STATUS · {symbol} · MARKET CLOSED — Weekend session closed; no new trade at old prices."
+                    if display["status"]=="FEED ERROR":
+                        return f"AI STATUS · {symbol} · FEED ERROR — LIVE price provider unavailable; new entries blocked."
+                except Exception:
+                    pass
         if "already has an open position" in low:
             sym=raw.split(":",1)[0].strip()
             return (
@@ -2934,79 +2950,95 @@ class App:
 
 
     def _refresh_quality_page(self):
+        """Display health of all enabled markets without changing trade gates."""
         e=self.engine
         rows=[]; healthy=0; watch=0; critical=0; spreads=[]
-        ordered=self._ordered()
+        display_counts={"LIVE":0,"MARKET CLOSED":0,"STALE DATA":0,"FEED ERROR":0}
         class_filter=getattr(self,"quality_class_var",tk.StringVar(value="ALL")).get()
         health_filter=getattr(self,"quality_health_var",tk.StringVar(value="ALL")).get()
-
-        visible=[]
-        for sym in ordered:
+        symbols=list(dict.fromkeys(self._ordered()+list(self.cfg.get("symbols",[]))))
+        get_feed_status=getattr(e.feed,"feed_status",None)
+        for sym in symbols:
             meta=instrument_meta(sym)
             if class_filter!="ALL" and meta["asset_class"]!=class_filter:
                 continue
-            s=e.snapshots[sym]
-            quality=float(s.quality); spread=float(s.spread_pips)
-            max_spread=float(self.cfg.get("max_spread_pips",2.5))
-            if quality>=90 and spread<=max_spread*.65:
-                status="HEALTHY"
-            elif quality>=75 and spread<=max_spread:
-                status="WATCH"
+            snap=e.snapshots.get(sym)
+            if callable(get_feed_status):
+                try:
+                    raw=get_feed_status(sym) or {}
+                    if not isinstance(raw,dict):raw={}
+                    info=display_feed_status(
+                        sym,raw.get("status"),raw.get("age_seconds"),raw.get("error")
+                    )
+                except Exception:
+                    info=display_feed_status(sym,"NO DATA",error="Provider unavailable")
             else:
-                status="CRITICAL"
-            if health_filter!="ALL" and status!=health_filter:
-                continue
-            visible.append((sym,status))
-
-        # Counts are calculated across full enabled/filtered class universe, not only status-filtered rows.
-        universe=[sym for sym in ordered if class_filter=="ALL" or instrument_meta(sym)["asset_class"]==class_filter]
-        for sym in universe:
-            s=e.snapshots[sym]; quality=float(s.quality); spread=float(s.spread_pips)
-            max_spread=float(self.cfg.get("max_spread_pips",2.5))
-            spreads.append(spread)
-            if quality>=90 and spread<=max_spread*.65:healthy+=1
-            elif quality>=75 and spread<=max_spread:watch+=1
-            else:critical+=1
-
-        for i,(sym,status) in enumerate(visible):
-            s=e.snapshots[sym]; rg=e.regimes.get(sym,"—"); meta=instrument_meta(sym)
-            spread=float(s.spread_pips); max_spread=float(self.cfg.get("max_spread_pips",2.5))
-            cost="GOOD" if spread<=max_spread*.55 else "ELEVATED" if spread<=max_spread else "EXPENSIVE"
-            health_text={"HEALTHY":"● Healthy","WATCH":"● Watch","CRITICAL":"● Critical"}[status]
-            tag={"HEALTHY":"good","WATCH":"wait","CRITICAL":"bad"}[status]
-            rows.append((
-                sym,
-                (short_instrument(sym),meta["asset_class"],f"{s.quality:.0f}%",f"{spread:.1f} u",
-                 cost,rg,"Now",health_text),
-                (f"stripe{i%2}",tag)
-            ))
+                # Synthetic test feed has no public-provider health metadata.
+                info=display_feed_status(sym,"LIVE" if snap else "NO DATA")
+            label=info["status"]
+            display_counts[label]=display_counts.get(label,0)+1
+            if label=="LIVE" and snap is not None:
+                quality=float(snap.quality); spread=float(snap.spread_pips)
+                max_spread=float(self.cfg.get("max_spread_pips",2.5))
+                spreads.append(spread)
+                if quality>=90 and spread<=max_spread*.65:
+                    health="HEALTHY"; healthy+=1
+                elif quality>=75 and spread<=max_spread:
+                    health="WATCH"; watch+=1
+                else:
+                    health="CRITICAL"; critical+=1
+                if health_filter not in ("ALL",health):
+                    continue
+                cost="GOOD" if spread<=max_spread*.55 else "ELEVATED" if spread<=max_spread else "EXPENSIVE"
+                status_text={"HEALTHY":"● LIVE / Healthy","WATCH":"● LIVE / Watch",
+                             "CRITICAL":"● LIVE / Critical"}[health]
+                tag={"HEALTHY":"good","WATCH":"wait","CRITICAL":"bad"}[health]
+                rows.append((
+                    sym,
+                    (short_instrument(sym),meta["asset_class"],f"{quality:.0f}%",f"{spread:.1f} u",
+                     cost,e.regimes.get(sym,"—"),"Now",status_text),
+                    (f"stripe{len(rows)%2}",tag)
+                ))
+            elif health_filter=="ALL":
+                tag="bad" if label=="FEED ERROR" else "wait"
+                rows.append((
+                    sym,
+                    (short_instrument(sym),meta["asset_class"],"—","—","—","—","—",label),
+                    (f"stripe{len(rows)%2}",tag)
+                ))
         self._stable_rows("qual",rows)
 
-        total=len(universe); avg=(sum(spreads)/len(spreads) if spreads else 0)
-        overall="EXCELLENT" if total and healthy/total>=.9 and critical==0 else \
-                "GOOD" if total and healthy/total>=.75 and critical<=max(1,int(total*.03)) else \
-                "DEGRADED" if critical<max(2,int(total*.15)) else "CRITICAL"
-
+        total=healthy+watch+critical
+        avg=sum(spreads)/len(spreads) if spreads else 0.0
+        if total:
+            overall="EXCELLENT" if healthy/total>=.9 and critical==0 else \
+                    "GOOD" if healthy/total>=.75 and critical<=max(1,int(total*.03)) else \
+                    "DEGRADED" if critical<max(2,int(total*.15)) else "CRITICAL"
+        else:
+            overall="MARKET CLOSED" if display_counts["MARKET CLOSED"] and \
+                    not (display_counts["STALE DATA"] or display_counts["FEED ERROR"]) else "NO LIVE DATA"
         self.quality_stats["FEED HEALTH"].set(overall)
         self.quality_stats["HEALTHY"].set(f"{healthy} / {total}")
-        self.quality_stats["AVG SPREAD"].set(f"{avg:.2f} u")
+        self.quality_stats["AVG SPREAD"].set(f"{avg:.2f} u" if total else "—")
         self.quality_stats["LAST UPDATE"].set(time.strftime("%H:%M:%S"))
 
-        status_col=GREEN if overall in ("EXCELLENT","GOOD") else AMBER if overall=="DEGRADED" else RED
+        status_col=GREEN if overall in ("EXCELLENT","GOOD") else AMBER if overall in ("DEGRADED","MARKET CLOSED") else RED
         for key,col in (
             ("FEED HEALTH",status_col),("HEALTHY",GREEN if healthy else AMBER),
-            ("AVG SPREAD",GREEN if avg<=float(self.cfg.get("max_spread_pips",2.5))*.65 else AMBER),
-            ("LAST UPDATE",CYAN)
+            ("AVG SPREAD",GREEN if total and avg<=float(self.cfg.get("max_spread_pips",2.5))*.65 else AMBER),
+            ("LAST UPDATE",CYAN),
         ):
             card=self.quality_stat_cards.get(key)
             if card:card.value_color=col; card.redraw()
 
         if hasattr(self,"quality_explain"):
-            blocked=watch+critical
             self.quality_explain.set(
-                f"DATA QUALITY: {overall}  •  {healthy} healthy  •  {watch} watch  •  {critical} critical  •  "
-                f"average spread {avg:.2f} units  •  {blocked} market(s) need extra caution before execution  •  "
-                f"showing {len(visible)} rows"
+                f"DATA QUALITY: {overall}  •  {display_counts['LIVE']} LIVE  •  "
+                f"{display_counts['MARKET CLOSED']} MARKET CLOSED  •  "
+                f"{display_counts['STALE DATA']} STALE DATA  •  "
+                f"{display_counts['FEED ERROR']} FEED ERROR  •  "
+                f"{healthy} healthy / {watch} watch / {critical} critical among LIVE prices  •  "
+                f"showing {len(rows)} markets. Execution still requires fresh candles."
             )
             self.quality_status_label.configure(fg=status_col)
 
