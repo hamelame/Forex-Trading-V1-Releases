@@ -90,6 +90,9 @@ class MobileTradingEngine(TradingEngine):
     entry_asset_scope = "MULTI_MARKET"
 
     def _open(self, d, s):
+        if self.entry_asset_scope == "BLOCKED":
+            self.last_open_block_reason = "PAPER market data not ready; all new entries blocked."
+            return
         if (self.entry_asset_scope == "CRYPTO_ONLY"
                 and instrument_meta(s.symbol).get("asset_class") != "CRYPTO"):
             self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
