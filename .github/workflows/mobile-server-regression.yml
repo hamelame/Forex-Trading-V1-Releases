@@ -19,6 +19,7 @@ on:
       - mobile-ig-auto-persistent-start-errors-20261009
       - mobile-paper-start-feedback-20261009
       - mobile-crypto-weekend-paper-20261010
+      - mobile-crypto-expansion-paper-20261010
   workflow_dispatch:
 jobs:
   mobile-tests:
