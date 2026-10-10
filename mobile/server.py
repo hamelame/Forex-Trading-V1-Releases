@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -31,6 +32,19 @@ from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
 ROOT = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent / "web"
 MAX_BODY = 32_768
+
+
+def _non_crypto_session_open(now=None):
+    """Conservative mobile-only weekend gate; NY close/open follows US DST.
+
+    Public quote services may keep reporting Friday's last valid candle. Never
+    let an unrelated live crypto candle re-enable non-crypto PAPER entries.
+    """
+    moment = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    weekday = moment.weekday()  # Monday=0; Saturday=5, Sunday=6
+    return not (weekday == 5 or (weekday == 4 and moment.hour >= 17)
+                or (weekday == 6 and moment.hour < 17))
+
 # Deliberately exclude strategy/equity/AI promotion internals. No arbitrary config patching.
 EDITABLE = {
     "paper_trading_capital": (float, 1000.0, 100000.0),
@@ -93,8 +107,11 @@ class MobileTradingEngine(TradingEngine):
         if self.entry_asset_scope == "BLOCKED":
             self.last_open_block_reason = "PAPER market data not ready; all new entries blocked."
             return
-        if (self.entry_asset_scope == "CRYPTO_ONLY"
-                and instrument_meta(s.symbol).get("asset_class") != "CRYPTO"):
+        asset = instrument_meta(s.symbol).get("asset_class")
+        if asset != "CRYPTO" and not _non_crypto_session_open():
+            self.last_open_block_reason = "Weekend market closed: non-crypto PAPER entry blocked."
+            return
+        if self.entry_asset_scope == "CRYPTO_ONLY" and asset != "CRYPTO":
             self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
             return
         return super()._open(d, s)
@@ -114,7 +131,9 @@ class MobileRuntime:
         test_symbols = (
             "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD",
             "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "XAUUSD", "XAGUSD",
-            "BTCUSD", "ETHUSD",
+            # Eight liquid, supported mobile crypto feeds; no meme coins.
+            "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
+            "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
         )
         self.staged_paper_test = str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE" and os.getenv("FX_MOBILE_TEST_FULL_UNIVERSE", "0") != "1"
         if self.staged_paper_test:
@@ -289,6 +308,7 @@ class MobileRuntime:
                     "last_scan_age_seconds": None if elapsed is None else round(elapsed, 1)}
         fresh = 0
         fresh_crypto = 0
+        fresh_non_crypto = 0
         crypto_symbols = []
         for symbol, snap in list(self.engine.snapshots.items()):
             if symbol not in self.cfg["symbols"]:
@@ -326,7 +346,11 @@ class MobileRuntime:
                 if klass == "CRYPTO":
                     fresh_crypto += 1
                     crypto_symbols.append(symbol)
-        full = fresh >= 3
+                else:
+                    fresh_non_crypto += 1
+        # Multiple crypto quotes do not make FX/metals/indices tradeable.
+        # Real non-crypto market presence AND weekend opening are mandatory.
+        full = fresh >= 3 and fresh_non_crypto >= 1 and _non_crypto_session_open()
         crypto_only = not full and fresh_crypto >= 1
         scope = "MULTI_MARKET" if full else ("CRYPTO_ONLY" if crypto_only else "BLOCKED")
         return {"ready": full or crypto_only, "scope": scope,
