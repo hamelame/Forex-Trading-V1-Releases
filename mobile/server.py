@@ -24,8 +24,8 @@ from forex_app import __version__
 from forex_app.database import Database
 from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
-from forex_app.live_market import LiveMarketFeed
 from forex_app.market import SyntheticFeed
+from mobile.crypto_feed import MobileLiveMarketFeed
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +85,18 @@ def valid_setting(key, value):
     return type(value) in (int, float) and math.isfinite(value) and spec[1] <= value <= spec[2]
 
 
+class MobileTradingEngine(TradingEngine):
+    """Mobile PAPER gate: when only crypto is LIVE, never open stale FX/metal."""
+    entry_asset_scope = "MULTI_MARKET"
+
+    def _open(self, d, s):
+        if (self.entry_asset_scope == "CRYPTO_ONLY"
+                and instrument_meta(s.symbol).get("asset_class") != "CRYPTO"):
+            self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
+            return
+        return super()._open(d, s)
+
+
 class MobileRuntime:
     """Serialize all engine and SQLite access in one lock; scan outside HTTP handlers."""
 
@@ -133,10 +145,10 @@ class MobileRuntime:
             # TradingEngine's legacy constructor clears open_positions on
             # every launch. Preserve the mobile ledger during boot instead.
             self.db._preserve_positions_during_boot = True
-        self.feed = feed or (LiveMarketFeed(self.cfg["symbols"], self.cfg)
+        self.feed = feed or (MobileLiveMarketFeed(self.cfg["symbols"], self.cfg)
                              if str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE"
                              else SyntheticFeed(self.cfg["symbols"]))
-        self.engine = TradingEngine(self.cfg, self.feed, self.db)
+        self.engine = MobileTradingEngine(self.cfg, self.feed, self.db)
         self.checkpoint = PaperCheckpoint(self.db) if self.durable else None
         self.auto_resume_pending = False
         self.persistence_error = None
@@ -193,6 +205,10 @@ class MobileRuntime:
             self._scan_started_monotonic = begin
             try:
                 with self.lock:
+                    # Assess the last completed feed scan before each entry pass.
+                    # Every market still refreshes; crypto-only PAPER cannot
+                    # open a non-crypto position until full readiness returns.
+                    self.engine.entry_asset_scope = self.trading_readiness().get("scope", "MULTI_MARKET")
                     self.engine.scan()
                     if self.auto_resume_pending and self.trading_readiness_after_scan():
                         self.engine.set_enabled(True, reset_on_start=False)
@@ -253,32 +269,74 @@ class MobileRuntime:
             self.last_scan_completed_at = previous
 
     def trading_readiness(self):
-        """Called while engine lock is held; conservatively fail closed."""
+        """Asset-aware PAPER readiness; preserved weekend forex quotes stay stale."""
         if self.persistence_error:
-            return {"ready": False, "fresh": 0, "required": 3, "reason": self.persistence_error}
+            return {"ready": False, "scope": "BLOCKED", "fresh": 0,
+                    "fresh_crypto": 0, "required": 3, "reason": self.persistence_error}
         if str(self.cfg.get("market_data_mode", "LIVE")).upper() != "LIVE":
-            return {"ready": True, "fresh": 0, "required": 0,
+            return {"ready": True, "scope": "SYNTHETIC", "fresh": 0,
+                    "fresh_crypto": 0, "required": 0,
                     "reason": "Synthetic test feed (not production LIVE pricing)"}
         elapsed = (time.monotonic() - self.last_scan_completed_at
                    if self.last_scan_completed_at is not None else None)
         if elapsed is None or elapsed > 45:
-            return {"ready": False, "fresh": 0, "required": 3,
+            return {"ready": False, "scope": "BLOCKED", "fresh": 0,
+                    "fresh_crypto": 0, "required": 3,
                     "reason": "Market scanner has not completed recently",
                     "last_scan_age_seconds": None if elapsed is None else round(elapsed, 1)}
         fresh = 0
+        fresh_crypto = 0
+        crypto_symbols = []
         for symbol, snap in list(self.engine.snapshots.items()):
+            if symbol not in self.cfg["symbols"]:
+                continue
             if str(getattr(snap, "feed_status", "")) != "LIVE":
                 continue
-            age = float(getattr(snap, "data_age_seconds", float("inf")) or 0)
-            meta = instrument_meta(symbol)
-            max_age = float(self.cfg.get("live_data_stale_seconds", 180)) if meta.get("asset_class") in ("FOREX", "CRYPTO") else float(self.cfg.get("live_data_delayed_stale_seconds", 1200))
-            if math.isfinite(age) and age <= max_age:
+            try:
+                age = float(getattr(snap, "data_age_seconds", float("inf")))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(age) or age < 0:
+                continue
+            # The snapshot's original age does not increase while its feed is
+            # down. Enforce current UTC freshness of the actual signal candle.
+            stamp = getattr(snap, "timestamp", None)
+            if stamp:
+                try:
+                    ts = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        continue
+                    since = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if since < -90 or not math.isfinite(since):
+                        continue
+                    age = max(age, since)
+                except (ValueError, TypeError, OverflowError):
+                    continue
+            klass = instrument_meta(symbol).get("asset_class")
+            max_age = (
+                float(self.cfg.get("live_data_stale_seconds", 180))
+                if klass in ("FOREX", "CRYPTO")
+                else float(self.cfg.get("live_data_delayed_stale_seconds", 1200))
+            )
+            if age <= max_age:
                 fresh += 1
-        required = 3
-        return {"ready": fresh >= required, "fresh": fresh,
-                "required": required, "last_scan_age_seconds": round(elapsed, 1),
-                "reason": "Ready for simulated trading" if fresh >= required
-                          else "Waiting for at least 3 fresh LIVE market candles"}
+                if klass == "CRYPTO":
+                    fresh_crypto += 1
+                    crypto_symbols.append(symbol)
+        full = fresh >= 3
+        crypto_only = not full and fresh_crypto >= 1
+        scope = "MULTI_MARKET" if full else ("CRYPTO_ONLY" if crypto_only else "BLOCKED")
+        return {"ready": full or crypto_only, "scope": scope,
+                "fresh": fresh, "fresh_crypto": fresh_crypto,
+                "crypto_symbols": crypto_symbols,
+                "required": 1 if crypto_only else 3,
+                "last_scan_age_seconds": round(elapsed, 1),
+                "reason": (
+                    "Ready for simulated multi-market trading" if full else
+                    "CRYPTO 24/7 PAPER ready · non-crypto entries blocked"
+                    if crypto_only else
+                    "Waiting for 3 fresh LIVE markets or 1 fresh BTC/ETH crypto feed"
+                )}
 
     def _learning(self):
         if time.monotonic() - self._learning_at > 15:
@@ -429,6 +487,7 @@ class MobileRuntime:
                 readiness = self.trading_readiness()
                 if not readiness["ready"]:
                     raise ValueError("PAPER start blocked: " + readiness["reason"])
+                e.entry_asset_scope = readiness.get("scope", "MULTI_MARKET")
                 if e.positions:
                     # Preserve any paused open PAPER positions; never reset them silently.
                     e.set_enabled(True, reset_on_start=False)
