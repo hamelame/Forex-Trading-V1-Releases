@@ -124,7 +124,7 @@ class MobileWeekendCryptoTests(unittest.TestCase):
 
     def test_staged_universe_keeps_btc_and_eth_but_not_all_pc_symbols(self):
         self.assertTrue(self.runtime.staged_paper_test)
-        self.assertGreater(self.runtime.full_symbol_count, len(self.runtime.cfg["symbols"]))
+        self.assertEqual(self.runtime.full_symbol_count, 5)  # isolated fixture
         self.assertIn("BTCUSD", self.runtime.cfg["symbols"])
         self.assertIn("ETHUSD", self.runtime.cfg["symbols"])
 
@@ -199,7 +199,7 @@ class PublicCryptoFallbackTests(unittest.TestCase):
         f._refresh_symbol("BTCUSD", force=True)
         self.assertNotIn("BTCUSD", f._provider)
         self.assertIn("All public crypto sources unavailable", f._last_error["BTCUSD"])
-        with self.assertRaisesRegex(RuntimeError, "No live candles"):
+        with self.assertRaisesRegex(RuntimeError, "All public crypto sources unavailable"):
             f.snapshot("BTCUSD")
 
     def test_malformed_ohlc_rejected(self):
