@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -200,8 +201,30 @@ def ig_auto_paper_snapshot():
             feed_age = float(feed_age)
         except (TypeError, ValueError):
             feed_age = math.inf
-        if not math.isfinite(feed_age):
+        if not math.isfinite(feed_age) or feed_age < 0:
             feed_age = None
+        # Saved quotes that were fresh on Friday cannot arm IG DEMO after
+        # forex closes. Use the candle's actual UTC timestamp as well.
+        timestamp = getattr(snap, "timestamp", None) if snap else None
+        if timestamp:
+            try:
+                ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    feed_age = None
+                else:
+                    wall_age = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if not math.isfinite(wall_age) or wall_age < -90:
+                        feed_age = None
+                    else:
+                        feed_age = max(feed_age or 0, wall_age)
+            except (TypeError, ValueError, OverflowError):
+                feed_age = None
+        # This broker adapter is FOREX ONLY, even when PAPER is in CRYPTO_ONLY.
+        broker_feed_status = (
+            str(getattr(snap, "feed_status", "")) if snap and feed_age is not None
+            and feed_age <= float(rt.cfg.get("live_data_stale_seconds", 180))
+            else "STALE"
+        )
         return {
             "engine_running": bool(e.enabled),
             "paper_storage_ready": bool(rt.durable and rt.persistence_error is None),
@@ -211,7 +234,7 @@ def ig_auto_paper_snapshot():
                 and rt.persistence_error is None and rt.last_scan_error is None
                 and str(rt.cfg.get("market_data_mode", "")) == "LIVE"
             ),
-            "eurusd_feed_status": str(getattr(snap, "feed_status", "")) if snap else "",
+            "eurusd_feed_status": broker_feed_status,
             "eurusd_feed_age_seconds": feed_age,
             "eurusd_bid": float(getattr(snap, "bid", 0.0)) if snap else None,
             "eurusd_ask": float(getattr(snap, "ask", 0.0)) if snap else None,
