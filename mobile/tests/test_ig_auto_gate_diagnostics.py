@@ -2,9 +2,11 @@
 
 No broker requests, no new PAPER sessions, no changes to persisted accounts.
 """
+import os
 import unittest
 from unittest.mock import Mock, patch
 
+os.environ.setdefault("FX_MOBILE_TOKEN", "local-test-token-987654321")
 from mobile_cloud import app as wsgi
 from mobile.ig_demo_auto import IGDemoAuto, IGTrialError, START_PHRASE
 
