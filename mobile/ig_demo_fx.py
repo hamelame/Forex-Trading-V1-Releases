@@ -34,6 +34,15 @@ def _positive(value):
 
 def _recent_ig_update(snapshot, now=None):
     """Honor IG quote update time when present. UTC or London time allowed."""
+    # Some IG API versions supply a UTC epoch instead of a local-time
+    # string. Use it only when it is genuinely numeric and recent.
+    if "updateTimestampUTC" in snapshot:
+        timestamp = _positive(snapshot.get("updateTimestampUTC"))
+        current = now or datetime.now(timezone.utc)
+        if (timestamp is None or current.tzinfo is None
+                or not 0 <= Decimal(str(current.timestamp())) - timestamp <= 180):
+            return False
+        return True
     stamp = snapshot.get("updateTime")
     if not isinstance(stamp, str) or not re.fullmatch(r"\d{2}:\d{2}:\d{2}", stamp):
         return False
