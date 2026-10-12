@@ -332,8 +332,13 @@ def ig_demo_auto_currency_risk():
         return jsonify(ig_auto_currency_risk_preview())
     except (IGTrialError, IGDemoError) as exc:
         return jsonify(error=str(exc)), 400
-    except Exception:
-        logging.warning("IG DEMO AUTO read-only currency risk preview unavailable")
+    except Exception as exc:
+        # Log only the Python exception CLASS (never the potentially secret
+        # broker error body or credentials). Keep the endpoint fail-closed.
+        logging.warning(
+            "IG DEMO AUTO read-only currency risk preview unavailable: %s",
+            type(exc).__name__,
+        )
         return jsonify(error="IG settlement/risk data could not be verified; no order sent"), 503
 
 
