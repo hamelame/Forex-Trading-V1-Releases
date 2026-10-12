@@ -293,6 +293,40 @@ def _safe_risk(preflight, *, nok_per_usd=None):
     return float(budget), float(planned_nok), settlement
 
 
+def currency_risk_preview():
+    """Explicit read-only IG DEMO Mini settlement and NOK loss-budget check.
+
+    Authenticates to the DEMO broker and fetches live account/market rules.
+    DOES NOT open, close, modify or arm any broker/PAPER position. Deliberate
+    start and another full quote/risk verification are still mandatory.
+    """
+    p = preview()
+    settlement, _ = _validate_preflight(p)
+    conversion = None
+    if p.get("account_currency") == "NOK" and settlement == "USD":
+        key, cst, xst, _ = _login()
+        conversion = validated_usdnok_ask(key, cst, xst)
+    budget, planned, selected = _safe_risk(p, nok_per_usd=conversion)
+    return {
+        "environment": "DEMO",
+        "account_currency": "NOK",
+        "ig_instrument": "EUR/USD Mini",
+        "order_settlement_currency": selected,
+        "broker_conversion_nok_per_usd": (
+            float(conversion) if conversion is not None else None
+        ),
+        "risk_budget_nok": budget,
+        "estimated_planned_risk_nok": planned,
+        "checks_pass": True,
+        "broker_orders_sent": False,
+        "paper_trading_unchanged": True,
+        "note": (
+            "Read-only calculation. IG AUTO is not armed and will recheck "
+            "all broker prices, account funds and risk before any later order."
+        ),
+    }
+
+
 class IGDemoAuto:
     """Single-worker operator-armed engine; no activity without an API start."""
 
