@@ -62,9 +62,14 @@ def _rule(value):
     }
 
 
-def _read_only_get(path, *, key, cst, xst, version=1, opener=None):
-    """Strict path allowlist: never permits any HTTP method except GET."""
+def _read_only_get(path, *, key, cst, xst, version=1, opener=None,
+                   allowed_fx_symbol=None):
+    """Strict read-only whitelist: only EURUSD searches or the approved
+    USDNOK converter lookup. No order or other currency pairs may be added.
+    """
     allowed_searches = {_search_path(term) for term in _SEARCH_TERMS}
+    if allowed_fx_symbol == "USDNOK":
+        allowed_searches.add("/markets?searchTerm=USDNOK")
     if path != "/positions" and path not in allowed_searches and not path.startswith("/markets/"):
         raise IGDemoError("IG DEMO preflight supports read-only endpoints only.")
     if path.startswith("/markets/") and not _EPIC.fullmatch(path.removeprefix("/markets/")):
