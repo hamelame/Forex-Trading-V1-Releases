@@ -38,6 +38,10 @@
       <div class="panel-head"><h2>IG DEMO Risk Limits</h2><span class="pill">0.5% MAX</span></div>
       <p class="muted">Your chosen limit: at most 0.5% of available broker funds/equity per proposed IG DEMO trade, based on loss at broker-side stop. This is not a guaranteed maximum loss: slippage, fees and spreads can increase it. PAPER is separate.</p>
       <div id="ig-demo-risk-policy">Risk configuration: loading…</div>
+      <div class="actions">
+        <button id="ig-demo-currency-check" class="soft full" type="button">Check IG Mini order currency and NOK risk (read only)</button>
+      </div>
+      <div id="ig-demo-currency-check-results" class="muted" role="status" aria-live="polite">Check permitted IG order currency, fresh broker USD/NOK conversion and planned loss. No orders are sent.</div>
       <p class="muted">IG DEMO AUTO is a separately armed, limited rollout. No unverified position sizes: only the already-confirmed EUR/USD Mini contract and smallest 0.1 size are eligible. The first live-demo API closure still needs forward validation.</p>
     </div>
     <div class="panel">
@@ -73,4 +77,4 @@
  <div id="more-menu" class="more-menu" hidden><button data-page="decisions">AI Decision Feed</button><button data-page="replay">Trade Replay</button><button data-page="performance">Performance Lab</button><button data-page="shadow">Shadow Lab</button><button data-page="ig-demo">IG DEMO Live Test</button><button data-page="quality">Data Quality & Risk</button></div>
 </div>
 <div id="confirm" class="modal" hidden><div class="modal-box"><h2 id="confirm-title">Confirm</h2><p id="confirm-message"></p><div class="actions"><button id="confirm-cancel" class="soft">Cancel</button><button id="confirm-ok" class="warn">Confirm</button></div></div></div>
-<script src="/app.js?v=ig-mini-usd-settlement-fx-20261012" defer></script></body></html>
+<script src="/app.js?v=ig-mini-risk-review-20261012" defer></script></body></html>
