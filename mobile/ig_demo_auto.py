@@ -304,7 +304,7 @@ def currency_risk_preview():
     settlement, _ = _validate_preflight(p)
     conversion = None
     if p.get("account_currency") == "NOK" and settlement == "USD":
-        key, cst, xst, _ = _login()
+        key, cst, xst, _ = _login(os.environ)
         conversion = validated_usdnok_ask(key, cst, xst)
     budget, planned, selected = _safe_risk(p, nok_per_usd=conversion)
     return {
@@ -411,7 +411,7 @@ class IGDemoAuto:
             if p.get("account_currency") == "NOK" and selected_currency == "USD":
                 # Order currency must be one listed by IG; account balance is
                 # still NOK. Verify the rate with read-only IG DEMO market data.
-                key, cst, xst, _ = _login()
+                key, cst, xst, _ = _login(os.environ)
                 conversion = validated_usdnok_ask(key, cst, xst)
             budget, planned, selected_currency = _safe_risk(
                 p, nok_per_usd=conversion
@@ -506,7 +506,7 @@ class IGDemoAuto:
         key = cst = xst = None
         conversion = None
         if p.get("account_currency") == "NOK" and selected_currency == "USD":
-            key, cst, xst, _ = _login()
+            key, cst, xst, _ = _login(os.environ)
             conversion = validated_usdnok_ask(key, cst, xst)
         budget, planned, selected_currency = _safe_risk(
             p, nok_per_usd=conversion
@@ -520,7 +520,7 @@ class IGDemoAuto:
         if previous and current and current < previous * Decimal("0.99"):
             raise IGTrialError("IG DEMO daily account drawdown reached 1%. New entries stopped.")
         if key is None:
-            key, cst, xst, _ = _login()
+            key, cst, xst, _ = _login(os.environ)
         if _trial_positions(key, cst, xst):
             raise IGTrialError("IG DEMO position appeared before order. Entry cancelled.")
         # Re-evaluate broker quote, contract, spread, stops and settlement currency
@@ -618,7 +618,7 @@ class IGDemoAuto:
             self._block("IG DEMO deal ID unavailable; manual broker review required.")
             return
         try:
-            key, cst, xst, _ = _login()
+            key, cst, xst, _ = _login(os.environ)
             rows = _trial_positions(key, cst, xst)
             pos = _position(rows, deal_id, side)
             if pos is None:
@@ -695,7 +695,7 @@ class IGDemoAuto:
                 "REVIEW_REQUIRED", "OPEN", "CLOSE_PENDING", "ORDER_PENDING",
             ):
                 return _state_public(st)
-            key, cst, xst, _ = _login()
+            key, cst, xst, _ = _login(os.environ)
             rows = _trial_positions(key, cst, xst)
             deal_id = st.get("deal_id")
             side = st.get("paper_direction")
