@@ -190,7 +190,10 @@ def ig_auto_paper_snapshot():
     """Tiny lock-bounded snapshot; IG HTTP calls always run OUTSIDE PAPER lock."""
     rt = get_runtime()
     if not rt.lock.acquire(timeout=0.15):
-        return {"scan_fresh": False, "paper_positions": []}
+        # Busy does not mean AI was stopped or that its saved account is broken.
+        # Preserve the fail-closed signal and label it separately for UI.
+        return {"scan_fresh": False, "paper_positions": [],
+                "snapshot_unavailable": "SCANNER_BUSY"}
     try:
         e = rt.engine
         scan_age = (time.monotonic() - rt.last_scan_completed_at
