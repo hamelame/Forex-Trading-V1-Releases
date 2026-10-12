@@ -27,6 +27,7 @@ from mobile.ig_demo_risk import policy as ig_demo_risk_policy
 from mobile.ig_demo_auto import (
     IGDemoAuto, START_PHRASE as IG_AUTO_START_PHRASE,
     STOP_PHRASE as IG_AUTO_STOP_PHRASE,
+    currency_risk_preview as ig_auto_currency_risk_preview,
 )
 from mobile.ig_demo_trial import (
     IGTrialError, status as ig_trial_status, create_first_demo_trade,
@@ -316,6 +317,24 @@ def ig_demo_auto_local_readiness():
     except Exception:
         logging.warning("Read-only IG AUTO local prerequisite check unavailable")
         return jsonify(error="PAPER prerequisite status unavailable; no broker orders sent"), 503
+
+
+@app.route("/api/ig-demo/auto/currency-risk", methods=["POST"])
+def ig_demo_auto_currency_risk():
+    """Read-only broker quote, settlement currency and NOK risk preview.
+
+    No trading action is reachable from this endpoint. The original START
+    still requires separate explicit confirmation and repeats all guards.
+    """
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(ig_auto_currency_risk_preview())
+    except (IGTrialError, IGDemoError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        logging.warning("IG DEMO AUTO read-only currency risk preview unavailable")
+        return jsonify(error="IG settlement/risk data could not be verified; no order sent"), 503
 
 
 @app.route("/api/ig-demo/auto/status", methods=["GET"])
