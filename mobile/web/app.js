@@ -114,6 +114,7 @@ function renderIGDemoAuto(){
   row('Broker & mode','<span class="positive">IG DEMO CFD</span>','No real-money accounts')+
   row('AI signal','EURUSD BUY only','NEW PAPER trade, after arming; 0.1 Mini; no copied lots')+
   row('Risk policy',escape(String(p.risk_percent??0.5)+'%'),'Fixed size 0.1 Mini with extra loss buffer and broker stop')+
+  row('IG order settlement currency',escape(p.settlement_currency||'Awaiting IG broker checks'),'IG instrument order currency may differ from NOK account balance')+
   row('IG trades attempted today',escape(String(p.attempts_today??0)+' / '+String(p.max_attempts_today??2)))+
   row('Estimated planned risk buffer',escape(p.estimated_risk_buffer_nok==null?'Not checked':num(p.estimated_risk_buffer_nok)+' NOK'),'Planned estimate only; loss can exceed this with slippage/costs')+
   row('Max permitted planned risk',escape(p.opening_risk_budget_nok==null?'Awaiting broker':num(p.opening_risk_budget_nok)+' NOK'),'0.5% of the lower usable demo funds')+
@@ -218,6 +219,13 @@ async function checkIGDemoReadiness(){
   const p=await api('/api/ig-demo/preflight',{method:'POST'});
   if(p.risk_policy)renderIGDemoRisk(p.risk_policy);
   let m=p.market_candidates||[];
+  const mini=m.find(x=>x.epic==='CS.D.EURUSD.CEEM.IP');
+  const miniCurrencies=Array.isArray(mini?.currencies)?mini.currencies.filter(x=>/^[A-Z]{3}$/.test(String(x))):[];
+  const currencyPlan=p.account_currency==='NOK'
+    ? (miniCurrencies.includes('NOK')?'NOK settlement listed by IG':
+      miniCurrencies.includes('USD')?'USD settlement listed · live USD/NOK risk conversion required':
+      'No supported Mini settlement currency verified')
+    : 'NOK DEMO account required for IG AUTO';
   app.igMiniReady=m.some(x=>x.epic==='CS.D.EURUSD.CEEM.IP' &&
     x.type==='CURRENCIES' && x.status==='TRADEABLE' && x.stops_allowed===true);
   renderIGTrialControls();
@@ -232,6 +240,8 @@ async function checkIGDemoReadiness(){
    row('IG balance',escape(String(p.account_balance??'—')+' '+(p.account_currency||'')))+
    row('Existing IG positions',escape(String(p.existing_ig_positions??'—')),'Must reconcile any existing broker trades before auto mode')+
    row('Instrument discovery',escape(search||'No IG market search results'),'Read-only IG market search; no broker orders')+
+   row('EUR/USD Mini order currencies',escape(miniCurrencies.join(', ')||'NOT VERIFIED'),'Permitted broker order currencies, not your account balance currency')+
+   row('IG Mini settlement / NOK risk',escape(currencyPlan),'AUTO still rechecks exchange rate, bid/offer, stop and 0.5% budget before entry')+
    '<h3>EURUSD IG CFD instruments</h3>'+
    (m.length?m.map(v=>'<div class="panel">'+
        '<strong>'+escape(v.name)+' · '+escape(v.epic)+'</strong>'+
@@ -242,6 +252,7 @@ async function checkIGDemoReadiness(){
        kv('Minimum size',String(v.minimum_deal_size?.value??'—')+' '+String(v.minimum_deal_size?.unit||''))+
        kv('Minimum stop distance',String(v.minimum_stop?.value??'—')+' '+String(v.minimum_stop?.unit||''))+
        kv('Value of one pip',v.value_of_one_pip)+
+       kv('Permitted order currencies',Array.isArray(v.currencies)?v.currencies.join(', '):'UNKNOWN')+
        kv('Contract size',v.contract_size)+kv('Unit',v.unit)+
        kv('Stops permitted',String(v.stops_allowed))+
        kv('Order preference',v.market_order_preference)+
