@@ -16,8 +16,10 @@ Risk rollout v1:
   - ambiguous send/confirm/close disables entries and demands manual review.
 
 Not a guaranteed maximum loss: normal stops can slip and carry extra costs.
-Notional/currency assumptions are allowed only for verified IG NOK Mini CFD
-contract with known size and pip value; other instruments are blocked.
+Only the verified NOK DEMO CFD account and EUR/USD Mini are supported.
+If IG permits USD (but not NOK) as the Mini order currency, a separate
+fresh USD/NOK IG DEMO forex quote and a conservative conversion buffer are
+mandatory before arming and once more immediately before sending an order.
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ from pathlib import Path
 
 from mobile.ig_demo import IGDemoError
 from mobile.ig_demo_preflight import preview, _read_only_get
+from mobile.ig_demo_fx import validated_usdnok_ask
 from mobile.ig_demo_risk import policy as broker_policy
 from mobile.ig_demo_trial import (
     IGTrialError, MINI_EPIC, TRIAL_SIZE, TRIAL_STOP_POINTS,
@@ -120,6 +123,7 @@ def _initial():
         "deal_reference": None, "deal_id": None, "broker_stop_verified": False,
         "reconciled_close_by_api": False,
         "opening_risk_budget_nok": None, "estimated_risk_buffer_nok": None,
+        "settlement_currency": None,
         "initial_balance_nok": None, "note": "IG DEMO AUTO is OFF; PAPER remains separate.",
         "last_start_error": None, "last_start_error_at": None,
         "updated_at": _now(),
@@ -131,7 +135,7 @@ def _state_public(s):
         "mode", "environment", "armed", "stage", "day", "attempts_today",
         "max_attempts_today", "paper_direction", "broker_stop_verified",
         "reconciled_close_by_api", "opening_risk_budget_nok",
-        "estimated_risk_buffer_nok", "note", "updated_at",
+        "estimated_risk_buffer_nok", "settlement_currency", "note", "updated_at",
         "last_start_error", "last_start_error_at",
     )
     result = {k: s.get(k) for k in fields}
@@ -236,19 +240,30 @@ def _stops_verified(p):
     )
 
 
-def _safe_risk(preflight):
-    """Fail closed on unknown NOK-vs-pip exposure or marginal equity.
+def _safe_risk(preflight, *, nok_per_usd=None):
+    """Broker-currency-aware NOK account risk guard. No order submission.
 
-    We deliberately take >=20 NOK per unit of quoted pip-value, *before*
-    considering broker spread and a 25 NOK cost reserve. Only the EURUSD
-    MINI known contract is supported; no other instrument is eligible.
-    This is a planning envelope, not an FX guarantee or risk guarantee.
+    NOK settlement retains the original conservative planning envelope.
+    For an IG-permitted USD order currency, require an independent, fresh
+    USD/NOK IG DEMO quote and buffer its rate by at least 50 percent, with
+    a floor of 20 NOK per pip-value unit. This is not an FX-rate guarantee.
+    Other settlement currencies remain strictly blocked.
     """
-    _, m = _validate_preflight(preflight)
+    settlement, m = _validate_preflight(preflight)
     if preflight.get("account_currency") != "NOK":
         raise IGTrialError("IG DEMO AUTO only supports verified NOK CFD demo accounts.")
-    if "NOK" not in m.get("currencies", []):
-        raise IGTrialError("IG Mini NOK settlement currency unavailable.")
+    if settlement not in ("NOK", "USD") or settlement not in m.get("currencies", []):
+        raise IGTrialError("IG Mini settlement currency not verified as NOK or USD.")
+    if settlement == "USD":
+        rate = _number(nok_per_usd)
+        if rate is None or not Decimal("5") <= rate <= Decimal("20"):
+            raise IGTrialError(
+                "IG Mini requires verified current USD/NOK conversion before "
+                "USD-settled orders on a NOK demo account."
+            )
+        conversion_buffer = max(NOK_PER_PIP_CURRENCY_BUFFER, rate * Decimal("1.5"))
+    else:
+        conversion_buffer = NOK_PER_PIP_CURRENCY_BUFFER
     if m.get("epic") != MINI_EPIC or str(m.get("contract_size")) not in ("10000", "10000.0"):
         raise IGTrialError("IG Mini instrument contract changed; AUTO blocked.")
     pip_value = _number(m.get("value_of_one_pip"))
@@ -268,14 +283,14 @@ def _safe_risk(preflight):
     planned_nok = (
         (Decimal(str(TRIAL_STOP_POINTS)) + spread) *
         Decimal(str(TRIAL_SIZE)) * pip_value *
-        NOK_PER_PIP_CURRENCY_BUFFER + COST_BUFFER_NOK
+        conversion_buffer + COST_BUFFER_NOK
     )
     if planned_nok > budget:
         raise IGTrialError("IG Mini minimum size exceeds the 0.5% planned risk budget.")
     # Defense-in-depth: no automatic execution on a near-empty account.
     if budget < Decimal("50"):
         raise IGTrialError("IG DEMO risk budget too small for first auto rollout.")
-    return float(budget), float(planned_nok)
+    return float(budget), float(planned_nok), settlement
 
 
 class IGDemoAuto:
@@ -357,7 +372,16 @@ class IGDemoAuto:
             if feed_age is None or feed_age < 0 or feed_age > 120:
                 raise IGTrialError("EURUSD PAPER market data is stale; AUTO cannot start.")
             p = preview()
-            budget, planned = _safe_risk(p)
+            selected_currency, _ = _validate_preflight(p)
+            conversion = None
+            if p.get("account_currency") == "NOK" and selected_currency == "USD":
+                # Order currency must be one listed by IG; account balance is
+                # still NOK. Verify the rate with read-only IG DEMO market data.
+                key, cst, xst, _ = _login()
+                conversion = validated_usdnok_ask(key, cst, xst)
+            budget, planned, selected_currency = _safe_risk(
+                p, nok_per_usd=conversion
+            )
             if p.get("existing_ig_positions") != 0:
                 raise IGTrialError("IG DEMO already has open positions. AUTO blocked.")
             # No new trades from PAPER positions which existed before arming.
@@ -367,6 +391,7 @@ class IGDemoAuto:
             ][:100]
             st["opening_risk_budget_nok"] = budget
             st["estimated_risk_buffer_nok"] = planned
+            st["settlement_currency"] = selected_currency
             st["initial_balance_nok"] = p.get("account_balance")
             st["stage"] = "WATCHING"
             st["armed"] = True
@@ -443,14 +468,25 @@ class IGDemoAuto:
         if not live_signal or live_signal != signal:
             raise IGTrialError("PAPER trade changed or data became stale before IG entry.")
         p = preview()
-        budget, planned = _safe_risk(p)
+        selected_currency, _ = _validate_preflight(p)
+        key = cst = xst = None
+        conversion = None
+        if p.get("account_currency") == "NOK" and selected_currency == "USD":
+            key, cst, xst, _ = _login()
+            conversion = validated_usdnok_ask(key, cst, xst)
+        budget, planned, selected_currency = _safe_risk(
+            p, nok_per_usd=conversion
+        )
+        if selected_currency != st.get("settlement_currency"):
+            raise IGTrialError("IG Mini settlement currency changed since arming.")
         if p.get("existing_ig_positions") != 0:
             raise IGTrialError("Unexpected IG DEMO broker position. No new orders.")
         previous = _number(st.get("initial_balance_nok"))
         current = _number(p.get("account_balance"))
         if previous and current and current < previous * Decimal("0.99"):
             raise IGTrialError("IG DEMO daily account drawdown reached 1%. New entries stopped.")
-        key, cst, xst, _ = _login()
+        if key is None:
+            key, cst, xst, _ = _login()
         if _trial_positions(key, cst, xst):
             raise IGTrialError("IG DEMO position appeared before order. Entry cancelled.")
         # Re-evaluate broker quote, contract, spread, stops and settlement currency
@@ -479,7 +515,15 @@ class IGDemoAuto:
             ],
         }
         fresh = {**p, "market_candidates": [raw]}
-        fresh_budget, fresh_planned = _safe_risk(fresh)
+        fresh_conversion = (
+            validated_usdnok_ask(key, cst, xst)
+            if selected_currency == "USD" else None
+        )
+        fresh_budget, fresh_planned, fresh_currency = _safe_risk(
+            fresh, nok_per_usd=fresh_conversion
+        )
+        if fresh_currency != selected_currency:
+            raise IGTrialError("IG Mini settlement currency changed before order.")
         _broker_vs_paper_price_check(still, raw)
         if fresh_budget < planned or fresh_planned > budget:
             raise IGTrialError("IG DEMO risk changed since initial verification.")
@@ -490,11 +534,12 @@ class IGDemoAuto:
         st["broker_stop_verified"] = False
         st["opening_risk_budget_nok"] = fresh_budget
         st["estimated_risk_buffer_nok"] = fresh_planned
+        st["settlement_currency"] = fresh_currency
         st["attempts_today"] += 1
         st["note"] = "Order intent written before broker submission; no retries allowed."
         self._persist()
         order = {
-            "dealReference": reference, "currencyCode": "NOK",
+            "dealReference": reference, "currencyCode": fresh_currency,
             "direction": signal["direction"], "epic": MINI_EPIC,
             "expiry": "-", "forceOpen": True, "guaranteedStop": False,
             "orderType": "MARKET", "size": float(TRIAL_SIZE),
