@@ -262,6 +262,59 @@ def get_ig_demo_auto():
         return ig_auto_worker
 
 
+def local_ig_auto_gate_status():
+    """Read-only local prerequisites. NEVER authenticates to IG or submits orders.
+
+    Shares the exact snapshot source with IGDemoAuto.start(), so the user can
+    distinguish a busy PAPER scanner from non-durable storage or stale EURUSD.
+    These are only LOCAL gates; the existing DEMO broker/risk gates still apply
+    at explicit START.
+    """
+    snapshot = ig_auto_paper_snapshot()
+    # The scanner holds the PAPER lock during scans. Its bounded timeout is
+    # deliberately fail-closed rather than reporting false storage problems.
+    if "engine_running" not in snapshot:
+        return {
+            "local_checks_pass": False,
+            "reason": "PAPER scanner busy; retry this read-only check after a completed scan.",
+            "checks": [{"name": "PAPER scanner accessible", "ok": False}],
+            "broker_checked": False, "orders_sent": False,
+        }
+    try:
+        age = float(snapshot.get("eurusd_feed_age_seconds"))
+    except (ValueError, TypeError, OverflowError):
+        age = math.inf
+    checks = [
+        ("PAPER AI running", snapshot.get("engine_running") is True),
+        ("Permanent PAPER disk and checkpoint healthy", snapshot.get("paper_storage_ready") is True),
+        ("Real LIVE market-data mode", snapshot.get("market_data_mode") == "LIVE"),
+        ("Recent completed PAPER scan", snapshot.get("scan_fresh") is True),
+        ("EUR/USD PAPER feed LIVE", snapshot.get("eurusd_feed_status") == "LIVE"),
+        ("EUR/USD quote younger than 120 seconds", math.isfinite(age) and 0 <= age <= 120),
+    ]
+    failed = [name for name, ok in checks if not ok]
+    return {
+        "local_checks_pass": not failed,
+        "reason": (
+            "Local PAPER prerequisites pass; broker checks still required on deliberate START."
+            if not failed else "IG AUTO blocked by local prerequisite: " + failed[0]
+        ),
+        "checks": [{"name": name, "ok": bool(ok)} for name, ok in checks],
+        "broker_checked": False, "orders_sent": False,
+    }
+
+
+@app.route("/api/ig-demo/auto/readiness", methods=["GET"])
+def ig_demo_auto_local_readiness():
+    if not allowed():
+        return jsonify(error="Access token required"), 401
+    try:
+        return jsonify(local_ig_auto_gate_status())
+    except Exception:
+        logging.warning("Read-only IG AUTO local prerequisite check unavailable")
+        return jsonify(error="PAPER prerequisite status unavailable; no broker orders sent"), 503
+
+
 @app.route("/api/ig-demo/auto/status", methods=["GET"])
 def ig_demo_auto_status():
     if not allowed():
