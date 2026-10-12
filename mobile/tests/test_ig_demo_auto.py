@@ -6,6 +6,7 @@ is not modified, broker DEMO safeguards, restart-disarm, and durable idempotency
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +86,8 @@ class IGDemoAutoTests(unittest.TestCase):
         self.preflight = broker_preflight()
         self.positions = []
         self.actions = []
+        self.expected_currency = "NOK"
+        self.usd_only = False
         self.mockpreview = patch.object(auto, "preview", side_effect=self.preview)
         self.mocklogin = patch.object(auto, "_login",
                                       return_value=("mock-key", "mock-cst", "mock-xst", "DEMO_ONLY"))
@@ -109,7 +112,10 @@ class IGDemoAutoTests(unittest.TestCase):
         self.actions.append(("GET", path))
         self.assertEqual(path, "/markets/" + auto.MINI_EPIC)
         self.assertEqual(version, 3)
-        return raw_market()
+        result = raw_market()
+        if self.usd_only:
+            result["instrument"]["currencies"] = [{"code":"USD"}]
+        return result
 
     def positions_read(self, key, cst, xst):
         self.actions.append(("GET", "/positions"))
@@ -125,7 +131,7 @@ class IGDemoAutoTests(unittest.TestCase):
             self.assertEqual(payload["size"], 0.1)
             self.assertEqual(payload["stopDistance"], 20)
             self.assertEqual(payload["limitDistance"], 40)
-            self.assertEqual(payload["currencyCode"], "NOK")
+            self.assertEqual(payload["currencyCode"], self.expected_currency)
             self.ref = payload["dealReference"]
             self.positions = [{
                 "position": {"dealId": "D1", "size": 0.1,
@@ -305,6 +311,63 @@ class IGDemoAutoTests(unittest.TestCase):
         ]
         with self.assertRaises(IGTrialError):
             self.start()
+
+    def test_usd_settlement_on_nok_account_requires_broker_usdnok_and_stays_in_budget(self):
+        """Realistic USD-only Mini contract: preserve NOK budget and broker order currency."""
+        self.expected_currency = "USD"
+        self.usd_only = True
+        self.preflight["market_candidates"][0]["currencies"] = ["USD"]
+        with patch.object(auto, "validated_usdnok_ask",
+                          return_value=Decimal("10.36")) as fx:
+            armed = self.start()
+            self.assertTrue(armed["armed"])
+            self.assertEqual(armed["settlement_currency"], "USD")
+            self.assertLess(armed["estimated_risk_buffer_nok"],
+                            armed["opening_risk_budget_nok"])
+            self.paper = fresh_paper([position("usd-pos")])
+            opened = self.engine.tick()
+        self.assertEqual(opened["stage"], "OPEN")
+        self.assertEqual(opened["settlement_currency"], "USD")
+        self.assertGreaterEqual(fx.call_count, 3)
+        self.assertEqual(len([x for x in self.actions if x[0] == "POST"]), 1)
+        self.assertEqual(opened["attempts_today"], 1)
+
+    def test_usd_only_missing_or_invalid_conversion_never_arms_or_orders(self):
+        self.usd_only = True
+        self.preflight["market_candidates"][0]["currencies"] = ["USD"]
+        with patch.object(auto, "validated_usdnok_ask",
+                          side_effect=IGTrialError("USD/NOK quote stale")) as fx:
+            with self.assertRaisesRegex(IGTrialError, "stale"):
+                self.start()
+            self.assertEqual(fx.call_count, 1)
+        self.assertFalse(self.engine.status()["armed"])
+        self.assertEqual(self.engine.status()["attempts_today"], 0)
+        self.assertEqual([x for x in self.actions if x[0] == "POST"], [])
+        for rate in (None, Decimal("0.001"), Decimal("21")):
+            with self.subTest(rate=rate):
+                with self.assertRaisesRegex(IGTrialError, "verified current USD/NOK"):
+                    auto._safe_risk(self.preflight, nok_per_usd=rate)
+
+    def test_unsupported_settlement_currency_never_arms(self):
+        self.preflight["market_candidates"][0]["currencies"] = ["JPY"]
+        with self.assertRaisesRegex(IGTrialError, "settlement currency"):
+            self.start()
+        self.assertFalse(self.engine.status()["armed"])
+        self.assertEqual(self.engine.status()["attempts_today"], 0)
+        self.assertEqual([x for x in self.actions if x[0] == "POST"], [])
+
+    def test_usd_fx_quote_must_be_reverified_before_order(self):
+        self.usd_only = True
+        self.preflight["market_candidates"][0]["currencies"] = ["USD"]
+        with patch.object(auto, "validated_usdnok_ask",
+                          side_effect=[Decimal("10.3"), IGTrialError("rate missing")]):
+            self.start()
+            self.paper = fresh_paper([position("blocked-fx")])
+            state = self.engine.tick()
+        self.assertFalse(state["armed"])
+        self.assertEqual(state["stage"], "BLOCKED")
+        self.assertEqual(state["attempts_today"], 0)
+        self.assertEqual([x for x in self.actions if x[0] == "POST"], [])
 
     def test_uncertain_order_disarms_and_does_not_retry(self):
         self.start()
