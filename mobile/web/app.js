@@ -223,6 +223,8 @@ async function checkIGDemoReadiness(){
    '<p class="muted">'+escape(p.blocked_reason||'Broker orders are still disabled.')+'</p>';
   toast(m.length?'IG DEMO EUR/USD market verified · no orders':'IG DEMO account connected; EUR/USD still not verified');
  }catch(err){
+  app.igMiniReady=false;
+  renderIGTrialControls();
   state.textContent='IG DEMO preflight blocked: '+String(err.message||err);
   toast('IG DEMO preflight blocked',true);
  }finally{
@@ -230,18 +232,37 @@ async function checkIGDemoReadiness(){
  }
 }
 
+function igDemoTrialBlockedReason(){
+ const trial=app.igDemoTrial,stage=trial?.stage||'UNKNOWN';
+ if(app.igDemoTrialBusy)return 'Checking IG DEMO trade status. Wait for the check to finish.';
+ if(!trial)return 'Loading the saved one-time IG DEMO trade status. No orders can be sent yet.';
+ if(stage==='ERROR')return 'Trial status could not be verified: '+String(trial.last_note||'Request failed')+'. No orders allowed.';
+ if(stage==='OPEN')return 'A DEMO test position is already open. Check the position and broker-side stop before doing anything else.';
+ if(stage==='STOP_UNVERIFIED')return 'Broker stop-loss is NOT verified. Check IG DEMO directly; no further opening attempt allowed.';
+ if(stage!=='NOT_STARTED')return 'One-time test is locked (stage: '+stage+'). Use Verify at IG to reconcile; never retry an uncertain opening.';
+ if(!app.igMiniReady)return 'First tap Check IG DEMO Trading Readiness on this page. The EUR/USD Mini quote and instrument must be verified again after leaving this page.';
+ return '';
+}
 function renderIGTrialControls(){
  const trial=app.igDemoTrial||{},stage=trial.stage||'UNKNOWN';
  const open=$('ig-demo-trial-open'),close=$('ig-demo-trial-close'),verify=$('ig-demo-trial-refresh');
  if(!open)return;
- open.disabled=app.igDemoTrialBusy||!app.igMiniReady||stage!=='NOT_STARTED';
+ const reason=igDemoTrialBlockedReason();
+ open.disabled=!!reason;
+ open.textContent=reason?'IG DEMO test unavailable':'Place ONE Small IG DEMO Trade';
  close.disabled=app.igDemoTrialBusy||!['OPEN','STOP_UNVERIFIED'].includes(stage);
  verify.disabled=app.igDemoTrialBusy;
  $('ig-demo-trial-stage').textContent='IG DEMO trial: '+stage+
-   (app.igMiniReady?' · Mini instrument validated by market search':' · run market readiness first');
+   (app.igMiniReady?' · Mini instrument validated by market search':' · market readiness must be checked this visit');
  $('ig-demo-trial-note').textContent=String(trial.last_note||'One explicit virtual-money order only. No automatic trade.');
  if(stage==='STOP_UNVERIFIED'){
   $('ig-demo-trial-note').textContent='WARNING: Broker-side stop NOT VERIFIED. Check position and close it on the IG DEMO platform if necessary.';
+ }
+ const guidance=$('ig-demo-trial-block-reason');
+ if(guidance){
+  guidance.className=reason?'gold':'positive';
+  guidance.textContent=reason?('WHY THE BUTTON IS LOCKED: '+reason):
+    'READY FOR MANUAL DEMO TEST. Confirming the trade is a separate step; IG rules and risk are rechecked before any order.';
  }
 }
 async function fetchIGDemoTrialStatus(){
@@ -267,7 +288,8 @@ async function runIGDemoTrialAction(action, phrase){
  }
 }
 async function openIGDemoTrial(){
- if(!app.igMiniReady||app.igDemoTrial?.stage!=='NOT_STARTED')return;
+ const blocked=igDemoTrialBlockedReason();
+ if(blocked){toast(blocked,true);return;}
  const title='Place ONE real IG DEMO Mini order?';
  const msg='VIRTUAL FUNDS ONLY. This will BUY 0.1 EUR/USD Mini (10,000 contract), with broker-side stop-loss 20 IG points and take-profit 40 IG points. Stops are not guaranteed. This is a MANUAL connectivity test, NOT an AI signal. A successful order creates a virtual broker position until closed. One opening attempt only. Continue?';
  if(!await confirmDialog(title,msg,'yes','Place ONE DEMO order'))return;
