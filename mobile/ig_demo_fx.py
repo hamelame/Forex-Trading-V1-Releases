@@ -59,6 +59,40 @@ def _recent_ig_update(snapshot, now=None):
     return False
 
 
+def _quote_nok_per_usd(instrument, snapshot):
+    """Decode IG price units without assuming onePipMeans is the level scale.
+
+    The v3 REST market snapshot exposes bid/offer levels plus the instrument's
+    onePipMeans. Some IG CFDs express rates directly (10.25 NOK/USD), others
+    in display points (102500). Only one interpretation can pass.
+    Ambiguous or unsupported scaling always blocks trading.
+    """
+    pip = _positive(instrument.get("onePipMeans"))
+    bid = _positive(snapshot.get("bid"))
+    ask = _positive(snapshot.get("offer"))
+    if pip is None:
+        raise IGTrialError("IG USD/NOK pip definition is missing or invalid; AUTO remains blocked.")
+    if bid is None or ask is None or ask <= bid:
+        raise IGTrialError("IG USD/NOK bid/offer quote is missing or inverted; AUTO remains blocked.")
+    candidates = []
+    for name, multiplier in (("DIRECT", Decimal("1")), ("PIP_LEVEL", pip)):
+        b, a = bid * multiplier, ask * multiplier
+        if Decimal("5") <= b < a <= Decimal("20") and a - b <= Decimal("0.25"):
+            if not any(prev_b == b and prev_a == a for _, prev_b, prev_a in candidates):
+                candidates.append((name, b, a))
+    if not candidates:
+        raise IGTrialError(
+            "IG USD/NOK bid/offer scaling or spread is outside verified "
+            "NOK-per-USD bounds; no IG AUTO orders allowed."
+        )
+    if len(candidates) != 1:
+        raise IGTrialError(
+            "IG USD/NOK quote scale is ambiguous (direct versus pip levels); "
+            "no IG AUTO orders allowed."
+        )
+    return candidates[0][2]
+
+
 def validated_usdnok_ask(key, cst, xst, *, opener=None, now=None):
     """Return NOK per USD, or block. NEVER sends a dealing request.
 
@@ -86,6 +120,7 @@ def validated_usdnok_ask(key, cst, xst, *, opener=None, now=None):
     if not epics:
         raise IGTrialError("IG DEMO USD/NOK forex market unavailable; conversion unverified.")
     # Only the first two verified market candidates; bound IG rate-limit usage.
+    reasons = []
     for epic in epics:
         raw = _read_only_get("/markets/" + epic, key=key, cst=cst, xst=xst,
                              version=3, opener=opener)
@@ -93,26 +128,30 @@ def validated_usdnok_ask(key, cst, xst, *, opener=None, now=None):
         snap = raw.get("snapshot") if isinstance(raw, dict) else None
         if not isinstance(ins, dict) or not isinstance(snap, dict):
             continue
-        if (ins.get("epic") != epic or ins.get("type") != "CURRENCIES"
-                or snap.get("marketStatus") != "TRADEABLE"
-                or snap.get("delayTime") != 0):
+        if ins.get("epic") != epic or ins.get("type") != "CURRENCIES":
+            reasons.append("IG USD/NOK broker market identity/type is not verified")
             continue
-        pip_increment = _positive(ins.get("onePipMeans"))
-        bid = _positive(snap.get("bid"))
-        offer = _positive(snap.get("offer"))
-        if pip_increment is None or bid is None or offer is None or offer <= bid:
+        if snap.get("marketStatus") != "TRADEABLE":
+            reasons.append("IG USD/NOK market is not TRADEABLE")
             continue
-        # IG market levels are expressed in pip units: e.g. 105000 *
-        # onePipMeans(0.0001) = 10.5 NOK per 1 USD.
-        bid_nok = bid * pip_increment
-        ask_nok = offer * pip_increment
-        if not (Decimal("5") <= bid_nok < ask_nok <= Decimal("20")):
-            continue
-        if ask_nok - bid_nok > Decimal("0.25"):
+        if snap.get("delayTime") != 0:
+            reasons.append("IG USD/NOK broker quote is delayed or delay is unknown")
             continue
         if not _recent_ig_update(snap, now=now):
+            reasons.append(
+                "IG USD/NOK quote updateTime is missing or older than 180 seconds"
+            )
             continue
-        return ask_nok
+        try:
+            rate = _quote_nok_per_usd(ins, snap)
+        except IGTrialError as exc:
+            # Only messages authored above; never return raw IG response data
+            # or authentication/session identifiers.
+            reasons.append(str(exc))
+            continue
+        return rate
+    if reasons:
+        raise IGTrialError(reasons[0] + "; broker orders remain OFF.")
     raise IGTrialError(
         "IG DEMO USD/NOK exchange rate or quote freshness not verified; "
         "no automatic orders allowed."
