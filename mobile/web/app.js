@@ -106,7 +106,7 @@ function renderIGDemoAuto(){
  const failure=$('ig-demo-auto-start-error');
  if(failure){
   const msg=String(app.igAutoStartError||p.last_start_error||'');
-  failure.textContent=msg?'IG DEMO AUTO could not start: '+msg:'';
+  failure.textContent=msg?'PREVIOUS IG DEMO AUTO start rejection: '+msg+' · Check current prerequisites before trying again.':'';
   failure.hidden=!msg;
  }
  const panel=$('ig-demo-auto-stats');
@@ -132,6 +132,32 @@ async function fetchIGDemoAutoStatus(){
   renderIGDemoAuto();
  }
 }
+async function checkIGDemoAutoLocalReadiness(){
+ const button=$('ig-demo-auto-local-check'), panel=$('ig-demo-auto-local-results');
+ if(!button||!panel||button.disabled)return;
+ button.disabled=true;
+ button.textContent='Checking local prerequisites…';
+ panel.textContent='Reading PAPER readiness only. No IG order or broker request.';
+ try{
+  const result=await api('/api/ig-demo/auto/readiness');
+  const entries=Array.isArray(result.checks)?result.checks:[];
+  const checks=entries.map(check=>
+    row(String(check.name||'Check'),
+        check.ok===true?'<span class="positive">PASS</span>':'<span class="gold">BLOCKED</span>')
+  ).join('');
+  const verdict=result.local_checks_pass===true
+    ?'<span class="positive">LOCAL CHECKS PASS · IG BROKER NOT YET CHECKED</span>'
+    :'<span class="gold">LOCAL CHECKS BLOCKED · NO BROKER ORDERS</span>';
+  panel.innerHTML='<p>'+verdict+'</p>'+checks+
+    '<p class="muted">'+escape(result.reason||'No details returned')+'</p>';
+ }catch(err){
+  panel.textContent='Could not complete read-only readiness check: '+String(err.message||err);
+ }finally{
+  button.disabled=false;
+  button.textContent='Check IG AUTO prerequisites (read only)';
+ }
+}
+
 async function verifyIGDemoAutoBroker(){
  if(app.igAutoBusy)return;
  app.igAutoBusy=true;renderIGDemoAuto();
@@ -306,7 +332,7 @@ async function refreshIGDemoTrial(){
  if(app.igDemoTrialBusy)return;
  await runIGDemoTrialAction('refresh','');
 }
-function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;$('ig-demo-auto-start').onclick=startIGDemoAuto;$('ig-demo-auto-stop').onclick=stopIGDemoAuto;$('ig-demo-auto-refresh').onclick=verifyIGDemoAutoBroker;$('ig-demo-trial-open').onclick=openIGDemoTrial;$('ig-demo-trial-close').onclick=closeIGDemoTrial;$('ig-demo-trial-refresh').onclick=refreshIGDemoTrial;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(app.state?.state_stale){toast('PAPER scanner is busy. Wait for the next completed LIVE scan and refresh.',true);return}if(!ready?.ready){toast('Start AI blocked: '+(ready?.reason||'Waiting for fresh LIVE market candles.')+' No orders are sent.',true);return}if(await confirmDialog('Start PAPER AI','Continue simulated trading on fresh LIVE prices? Existing PAPER positions are preserved. No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
+function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;$('ig-demo-auto-start').onclick=startIGDemoAuto;$('ig-demo-auto-stop').onclick=stopIGDemoAuto;$('ig-demo-auto-refresh').onclick=verifyIGDemoAutoBroker;$('ig-demo-auto-local-check').onclick=checkIGDemoAutoLocalReadiness;$('ig-demo-trial-open').onclick=openIGDemoTrial;$('ig-demo-trial-close').onclick=closeIGDemoTrial;$('ig-demo-trial-refresh').onclick=refreshIGDemoTrial;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(app.state?.state_stale){toast('PAPER scanner is busy. Wait for the next completed LIVE scan and refresh.',true);return}if(!ready?.ready){toast('Start AI blocked: '+(ready?.reason||'Waiting for fresh LIVE market candles.')+' No orders are sent.',true);return}if(await confirmDialog('Start PAPER AI','Continue simulated trading on fresh LIVE prices? Existing PAPER positions are preserved. No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
 function render(){const s=app.state;if(!s)return;$('status-dot').classList.toggle('active',s.running);$('engine-status').textContent=s.running?'AI ACTIVE':'AI PAUSED';$('version').textContent='v'+s.version;$('about-version').textContent=s.version;$('scan-clock').textContent='Scan '+stamp(s.last_scan_at);const feedExamples=s.feed_diagnostics?.examples||[];$('engine-message').textContent=s.last_scan_error?`SCAN ERROR: ${s.last_scan_error}`:(s.markets.length===0&&feedExamples.length?`LIVE DATA UNAVAILABLE · ${feedExamples.slice(0,2).join(' | ')}`:s.status);const ready=s.trading_readiness||{};const waiting=!ready.ready||!!s.state_stale;$('start').disabled=!!s.running;$('start').textContent=s.running?'▶ AI Running':waiting?'▶ Start AI · Check status':'▶ Start AI';$('start').title=ready.reason||'Waiting for price feed';$('start-hint').textContent=s.running?'PAPER AI is active. IG DEMO uses a separate Start control.':waiting?('Start AI is waiting: '+(s.state_stale?'Scanner busy; previous snapshot may be outdated.':ready.reason||'Need fresh LIVE market data.')+' '+String(ready.fresh??0)+' of '+String(ready.required??3)+' LIVE markets ready. Check Data Quality. Markets and free feeds may be closed or delayed on weekends.'):'PAPER is ready to resume without clearing your saved trades. This never sends IG broker orders.';$('pause').disabled=!s.running;$('open-count').textContent=s.positions.length;$('market-count').textContent=s.symbols.length+' staged markets';$('session-label').textContent=s.markets.find(x=>x.session)?.session||'—';renderDashboard();if(app.page==='markets')renderMarkets();if(app.page==='positions')renderPositions();if(app.page==='decisions')renderDecisions();if(app.page==='trades')renderTrades();if(app.page==='replay')renderReplayList();if(app.page==='performance')renderPerformance();if(app.page==='shadow')renderShadow();if(app.page==='quality')renderQuality();if(app.page==='settings'){if(!document.activeElement?.closest?.('#settings-form'))renderSettings();renderWatchlist()}drawGraphs()}
 function renderDashboard(){let s=app.state,p=s.performance;
  $('metrics').innerHTML=metric('PAPER equity',money(s.equity),'Balance '+money(s.balance))+metric('Unrealized P&L',money(s.unrealized),'Open simulated trades',cls(s.unrealized))+metric('Realized P&L',money(p.pnl),p.trades+' closed trades',cls(p.pnl))+metric('Win rate',num(p.win_rate,1)+'%',`Profit factor ${num(p.pf)}`,p.win_rate>=50?'positive':'gold');
