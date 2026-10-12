@@ -89,7 +89,9 @@ class IGDemoAutoTests(unittest.TestCase):
         self.expected_currency = "NOK"
         self.usd_only = False
         self.mockpreview = patch.object(auto, "preview", side_effect=self.preview)
-        self.mocklogin = patch.object(auto, "_login",
+        # autospec enforces the actual _login(env, opener=None) signature.
+        # A missing env previously caused an unexplained HTTP 503 in Render.
+        self.mocklogin = patch.object(auto, "_login", autospec=True,
                                       return_value=("mock-key", "mock-cst", "mock-xst", "DEMO_ONLY"))
         self.mockget = patch.object(auto, "_read_only_get", side_effect=self.get)
         self.mockpos = patch.object(auto, "_trial_positions", side_effect=self.positions_read)
