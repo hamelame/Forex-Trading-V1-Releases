@@ -23,6 +23,7 @@ on:
       - mobile-ig-trial-button-feedback-20261012
       - mobile-ig-auto-gate-diagnostics-20261012
       - mobile-ig-mini-usd-settlement-fx-20261012
+      - mobile-ig-login-env-fix-20261012
   workflow_dispatch:
 jobs:
   mobile-tests:
