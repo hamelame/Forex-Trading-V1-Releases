@@ -57,6 +57,51 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(ask, Decimal("10.3520"))
         self.assertEqual(len(self.calls),2)
 
+    def test_ig_direct_price_level_is_supported_without_multiplying_by_pip(self):
+        """Real IG market price may already be in NOK per USD."""
+        body=market(bid=10.3490, offer=10.3512)
+        body["snapshot"]["scalingFactor"]=100
+        with self.query(response=body):
+            rate=self.quote()
+        self.assertEqual(rate,Decimal("10.3512"))
+        self.assertEqual(len(self.calls),2)
+
+    def test_ambiguous_price_scale_refuses_to_guess_and_does_not_trade(self):
+        body=market(bid=10.3,offer=10.32)
+        body["instrument"]["onePipMeans"]="0.8"
+        with self.query(response=body):
+            with self.assertRaisesRegex(IGTrialError,"ambiguous"):
+                self.quote()
+
+    def test_wrong_pip_level_scale_reports_distinct_safe_reason(self):
+        body=market(bid=350000,offer=351000)
+        with self.query(response=body):
+            with self.assertRaisesRegex(IGTrialError,"scaling or spread"):
+                self.quote()
+
+    def test_old_or_missing_timestamp_reports_exact_freshness_gate(self):
+        for stamp in (None,"15:30:00","", "not-an-IG-time"):
+            with self.subTest(updateTime=stamp):
+                with self.query(response=market(updateTime=stamp)):
+                    with self.assertRaisesRegex(IGTrialError,"updateTime is missing or older"):
+                        self.quote()
+
+    def test_recent_utc_epoch_accepted_but_old_or_future_epoch_rejected(self):
+        now=NOW
+        good={"updateTimestampUTC":int(now.timestamp())-70,"marketStatus":"TRADEABLE"}
+        self.assertTrue(fx._recent_ig_update(good,now))
+        for ts in (int(now.timestamp())-181,int(now.timestamp())+2,None,True):
+            with self.subTest(timestamp=ts):
+                self.assertFalse(fx._recent_ig_update(
+                    {"updateTimestampUTC":ts},now
+                ))
+
+    def test_raw_bid_with_no_authorized_market_metadata_blocks(self):
+        body=market(bid=10.3,offer=10.32,delayTime=None)
+        with self.query(response=body):
+            with self.assertRaisesRegex(IGTrialError,"delayed or delay is unknown"):
+                self.quote()
+
     def test_explicit_missing_market_blocks(self):
         with self.query(search={"markets":[]}):
             with self.assertRaisesRegex(IGTrialError,"unavailable"):
