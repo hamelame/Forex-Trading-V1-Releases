@@ -21,6 +21,7 @@ on:
       - mobile-crypto-weekend-paper-20261010
       - mobile-crypto-expansion-paper-20261010
       - mobile-ig-trial-button-feedback-20261012
+      - mobile-ig-auto-gate-diagnostics-20261012
   workflow_dispatch:
 jobs:
   mobile-tests:
