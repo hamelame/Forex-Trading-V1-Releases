@@ -17,13 +17,13 @@ class CurrencyRiskPreviewTests(unittest.TestCase):
         p = broker_preflight()
         p["market_candidates"][0]["currencies"] = ["USD"]
         with patch.object(auto, "preview", return_value=p) as preview, \
-             patch.object(auto, "_login",
+             patch.object(auto, "_login", autospec=True,
                           return_value=("sample-key", "sample-cst", "sample-xst", "DEMO")) as login, \
              patch.object(auto, "validated_usdnok_ask", return_value=Decimal("10.24")) as fx, \
              patch.object(auto, "_request") as broker_order:
             data = auto.currency_risk_preview()
         preview.assert_called_once()
-        login.assert_called_once()
+        login.assert_called_once_with(os.environ)
         fx.assert_called_once_with("sample-key", "sample-cst", "sample-xst")
         broker_order.assert_not_called()
         self.assertEqual(data["account_currency"], "NOK")
