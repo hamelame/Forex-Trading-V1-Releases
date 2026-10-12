@@ -132,7 +132,9 @@ class ConversionTests(unittest.TestCase):
                 if "onePipMeans" in change:
                     body["instrument"]["onePipMeans"]=change["onePipMeans"]
                 with self.query(response=body):
-                    with self.assertRaisesRegex(IGTrialError,"not verified"):
+                    # Details now identify *which* guard blocked the quote;
+                    # all corruptions still MUST fail closed.
+                    with self.assertRaises(IGTrialError):
                         self.quote()
                 self.assertEqual(len(self.calls),2)
 
