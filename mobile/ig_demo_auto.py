@@ -343,6 +343,12 @@ class IGDemoAuto:
             if st["attempts_today"] >= MAX_TRADES_DAY:
                 raise IGTrialError("Daily IG DEMO AUTO rollout limit reached.")
             paper = self.paper_snapshot()
+            if isinstance(paper, dict) and paper.get("snapshot_unavailable") == "SCANNER_BUSY":
+                raise IGTrialError(
+                    "PAPER market scanner was busy at the instant of this check. "
+                    "IG AUTO remains OFF. Wait for a scan to finish and run the "
+                    "read-only prerequisite check; no broker order was sent."
+                )
             if not _paper_ready(paper):
                 raise IGTrialError("PAPER AI or durable PAPER storage not ready; AUTO cannot start.")
             if paper.get("eurusd_feed_status") != "LIVE":
