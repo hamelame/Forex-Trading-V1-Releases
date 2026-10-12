@@ -7,7 +7,7 @@ No third-party feed, speculative rate or account credential is ever returned.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
@@ -48,9 +48,12 @@ def _recent_ig_update(snapshot, now=None):
         for tz in (timezone.utc, _LONDON):
             local = now.astimezone(tz)
             candidate = local.replace(hour=h, minute=m, second=s, microsecond=0)
-            age = abs((local - candidate).total_seconds())
-            if age <= 180:
-                return True
+            # Support live quotes immediately around 00:00 without confusing
+            # the previous day's 23:59 update for a whole-day-old quote.
+            for day_offset in (-1, 0, 1):
+                age = abs((local - (candidate + timedelta(days=day_offset))).total_seconds())
+                if age <= 180:
+                    return True
     except (ValueError, TypeError, OverflowError):
         return False
     return False
