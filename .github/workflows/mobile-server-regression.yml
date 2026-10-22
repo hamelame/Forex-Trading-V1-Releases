@@ -25,6 +25,7 @@ on:
       - mobile-ig-mini-usd-settlement-fx-20261012
       - mobile-ig-login-env-fix-20261012
       - mobile-ig-usdnok-quote-validation-20261012
+      - mobile-signal-starvation-diagnostics-20261022
   workflow_dispatch:
 jobs:
   mobile-tests:
