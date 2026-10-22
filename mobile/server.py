@@ -6,6 +6,7 @@ Production requires FX_MOBILE_TOKEN (>=16 chars), HTTPS and a single worker.
 from __future__ import annotations
 
 import dataclasses
+from collections import Counter
 import hmac
 import json
 import logging
@@ -25,6 +26,7 @@ from forex_app import __version__
 from forex_app.database import Database
 from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
+from forex_app.intelligence import regime
 from forex_app.market import SyntheticFeed
 from mobile.crypto_feed import MobileLiveMarketFeed
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
@@ -100,8 +102,65 @@ def valid_setting(key, value):
 
 
 class MobileTradingEngine(TradingEngine):
-    """Mobile PAPER gate: when only crypto is LIVE, never open stale FX/metal."""
+    """Mobile PAPER safety gate and shadow-only rejection telemetry."""
     entry_asset_scope = "MULTI_MARKET"
+
+    def __init__(self, cfg, feed, db):
+        super().__init__(cfg, feed, db)
+        # Diagnostic counts are volatile and are NEVER part of risk/checkpoint
+        # state. A redeploy cannot rewrite PAPER balance, positions or trades.
+        self.signal_gate_counts = Counter()
+        self.signal_gate_observations = 0
+
+    @staticmethod
+    def _signal_gate(raw, learned):
+        """Label WHY an existing Champion decision did not become executable.
+
+        These labels are observational: no score, action, risk or session gate
+        is changed. Kept intentionally bounded for an inexpensive mobile UI.
+        """
+        reason = str(raw.reason or "").upper()
+        learned_reason = str(learned.reason or "").upper()
+        if raw.action == "BLOCK":
+            return ("SESSION_POLICY" if any(k in reason for k in
+                    ("WRONG_SESSION", "SESSION_DISABLED", "ROLLOVER_THIN"))
+                    else "MARKET_SAFETY")
+        if raw.action == "WAIT":
+            return "SIGNAL_QUALITY"
+        if raw.action in ("BUY", "SELL") and learned.action == "WAIT":
+            if "GOVERNOR RESEARCH-ONLY" in learned_reason:
+                return "LEARNING_GOVERNOR"
+            if "SYMBOLGUARD" in learned_reason or "SYMBOL/DIRECTION TEMPORARILY SUPPRESSED" in learned_reason:
+                return "LEARNING_SYMBOL"
+            if "FAST CONTEXT SUPPRESSED" in learned_reason or "FASTGUARD" in learned_reason:
+                return "LEARNING_FAST"
+            return "LEARNING_SCORE"
+        return "EXECUTION_CANDIDATE" if learned.action in ("BUY", "SELL") else "OTHER"
+
+    def _research_decision(self, s, liveness_relax=0.0):
+        # This matches TradingEngine._research_decision exactly for trading.
+        # Observe learning vetoes in counterfactual SHADOW only; the returned
+        # decision and all live execution gates are unchanged.
+        raw = self.champion.decide(s, self.currency_strength, liveness_relax=liveness_relax)
+        rg = regime(s)
+        learned = self.learning.adjust_decision(raw, s, rg)
+        if self.enabled:
+            label = self._signal_gate(raw, learned)
+            self.signal_gate_counts[label] += 1
+            self.signal_gate_observations += 1
+            if raw.action in ("BUY", "SELL") and learned.action == "WAIT" and self.cfg.get(
+                "counterfactual_learning_enabled", True
+            ):
+                if label == "LEARNING_GOVERNOR":
+                    note = "LEARNING_VETO · GOVERNOR"
+                elif label == "LEARNING_SYMBOL":
+                    note = "LEARNING_VETO · SYMBOL"
+                elif label == "LEARNING_FAST":
+                    note = "LEARNING_VETO · FAST"
+                else:
+                    note = "LEARNING_VETO · SCORE"
+                self.learning.observe_blocked(raw, s, rg, note, self.scan_count)
+        return learned, rg
 
     def _open(self, d, s):
         if self.entry_asset_scope == "BLOCKED":
@@ -365,6 +424,95 @@ class MobileRuntime:
                     "Waiting for 3 fresh LIVE markets or 1 fresh BTC/ETH crypto feed"
                 )}
 
+    def _signal_diagnostics(self):
+        """Read-only mobile breakdown; never changes the Champion or its gates."""
+        e = self.engine
+        counts = Counter()
+        samples = {}
+        for d in e.decisions.values():
+            reason = str(d.reason or "")
+            upper = reason.upper()
+            if d.action in ("BUY", "SELL"):
+                key = "EXECUTION_CANDIDATE"
+            elif "GOVERNOR RESEARCH-ONLY" in upper:
+                key = "LEARNING_GOVERNOR"
+            elif "SYMBOL/DIRECTION TEMPORARILY SUPPRESSED" in upper:
+                key = "LEARNING_SYMBOL"
+            elif "FAST CONTEXT SUPPRESSED" in upper:
+                key = "LEARNING_FAST"
+            elif "WRONG_SESSION" in upper or "SESSION_DISABLED" in upper or "ROLLOVER_THIN" in upper:
+                key = "SESSION_POLICY"
+            elif d.action == "BLOCK":
+                key = "MARKET_SAFETY"
+            else:
+                key = "SIGNAL_QUALITY"
+            counts[key] += 1
+            if key not in samples:
+                samples[key] = str(d.symbol) + " · " + reason[:180]
+
+        last_closed = self.db.conn.execute("SELECT MAX(closed_at) FROM trades").fetchone()[0]
+        last_opened = self.db.conn.execute("SELECT MAX(opened_at) FROM trades").fetchone()[0]
+        if e.positions:
+            newest_open = max(str(p.opened_at) for p in e.positions)
+            last_opened = max(str(last_opened or ""), newest_open)
+
+        def elapsed_hours(stamp):
+            if not stamp:
+                return None
+            try:
+                ts = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    return None
+                return round(max(0.0, (datetime.now(timezone.utc)-ts).total_seconds()/3600), 1)
+            except (ValueError, TypeError, OverflowError):
+                return None
+
+        # These hypothetical returns are close-to-close at a fixed horizon,
+        # NOT broker fills, net P&L, or evidence of real execution.
+        rows = self.db.counterfactuals(300)
+        bucket = {}
+        for item in rows:
+            reason = str(item["block_reason"] or "")
+            group = ("LEARNING_VETO" if reason.startswith("LEARNING_VETO") else
+                     reason.split(" · ")[0][:55] or "OTHER")
+            b = bucket.setdefault(group, {"samples": 0, "sum_r": 0.0, "positive": 0})
+            try:
+                r = float(item["hypothetical_r"])
+            except (ValueError, TypeError):
+                continue
+            if not math.isfinite(r):
+                continue
+            b["samples"] += 1
+            b["sum_r"] += r
+            b["positive"] += int(r > 0)
+        research = sorted(
+            ({"reason": k, "samples": v["samples"],
+              "average_hypothetical_r": round(v["sum_r"]/v["samples"], 3),
+              "positive_pct": round(100*v["positive"]/v["samples"], 1)}
+             for k, v in bucket.items() if v["samples"]),
+            key=lambda x: (-x["samples"], x["reason"])
+        )[:8]
+        hours = elapsed_hours(last_opened)
+        return {
+            "scope": "CURRENT_MARKET_SNAPSHOTS",
+            "current_reasons": dict(counts),
+            "example_reasons": samples,
+            "signal_observations_since_boot": e.signal_gate_observations,
+            "signal_reasons_since_boot": dict(e.signal_gate_counts),
+            "last_opened_at": last_opened,
+            "last_opened_hours_ago": hours,
+            "last_closed_at": last_closed,
+            "last_closed_hours_ago": elapsed_hours(last_closed),
+            "no_entry_48h": bool(e.enabled and hours is not None and hours >= 48),
+            "decision_starvation_candles": e.decision_starvation_scans,
+            "execution_starvation_candles": e.execution_starvation_scans,
+            "last_execution_rejections": dict(e.last_gate_reasons),
+            "opportunity_recovery_enabled": bool(self.cfg.get("opportunity_recovery_enabled", False)),
+            "shadow": {"scope": "LATEST_300_RESOLVED", "sampled_rows": len(rows),
+                       "groups": research, "pending": len(e.learning.pending_counterfactuals),
+                       "note": "Hypothetical fixed-horizon price moves only. No PAPER or IG orders; not net-profit forecasts."},
+        }
+
     def _learning(self):
         if time.monotonic() - self._learning_at > 15:
             self._cached_learning = clean_value(self.engine.learning_summary())
@@ -468,6 +616,7 @@ class MobileRuntime:
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
                 "risk": self._learning(), "selection": e.selection_summary(),
+                "signal_diagnostics": self._signal_diagnostics(),
                 "exposure": e.exposure_summary(), "currency_strength": e.strength_summary(),
                 "neural": e.neural.summary(), "adaptive_rsi": e.adaptive_rsi.summary(),
                 "positions": e.positions, "trades": session_trades, "equity_history": equity_rows,
