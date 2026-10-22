@@ -372,7 +372,7 @@ function renderDashboard(){let s=app.state,p=s.performance;
  $('metrics').innerHTML=metric('PAPER equity',money(s.equity),'Balance '+money(s.balance))+metric('Unrealized P&L',money(s.unrealized),'Open simulated trades',cls(s.unrealized))+metric('Realized P&L',money(p.pnl),p.trades+' closed trades',cls(p.pnl))+metric('Win rate',num(p.win_rate,1)+'%',`Profit factor ${num(p.pf)}`,p.win_rate>=50?'positive':'gold');
  let risk=s.risk||{}, sel=s.selection||{};
  const ready=s.trading_readiness||{};$('test-readiness').textContent=(ready.scope==='CRYPTO_ONLY'?'CRYPTO 24/7 PAPER READY':ready.ready?'READY FOR PAPER TEST':'PAPER TEST BLOCKED')+' · '+(ready.reason||'Waiting for scanner');$('test-readiness').className='test-readiness '+(ready.ready?'positive':'gold');
- $('health').innerHTML=row('PAPER test readiness',ready.ready?(ready.scope==='CRYPTO_ONLY'?'CRYPTO ONLY':'READY'):'BLOCKED',`${ready.fresh||0} fresh LIVE quotes / ${ready.required||3} needed · ${ready.reason||'Checking'}`)+row('Crypto LIVE feeds',String(ready.fresh_crypto||0),ready.scope==='CRYPTO_ONLY'?'24/7 PAPER available only on fresh crypto':'Crypto public feeds monitored independently of IG')+row('Active positions',String(s.positions.length),'Max '+s.settings.max_open_positions)+row('Selected markets',`${sel.selected_count||0} / ${sel.scanned||0}`,`${sel.eligible_count||0} eligible · ${sel.trade_ready||0} trade-ready`)+row('Drawdown',num(risk.drawdown_pct)+'%',risk.drawdown_mode||'NORMAL')+row('Risk state',escape(risk.risk_state||'—'),risk.loss_limit_mode||'NORMAL')+row('Last scanner',stamp(s.last_scan_at),s.market_data_mode+' input');
+ $('health').innerHTML=row('PAPER test readiness',ready.ready?(ready.scope==='CRYPTO_ONLY'?'CRYPTO ONLY':'READY'):'BLOCKED',`${ready.fresh||0} fresh LIVE quotes / ${ready.required||3} needed · ${ready.reason||'Checking'}`)+row('Crypto LIVE feeds',String(ready.fresh_crypto||0),ready.scope==='CRYPTO_ONLY'?'24/7 PAPER available only on fresh crypto':'Crypto public feeds monitored independently of IG')+row('Active positions',String(s.positions.length),'Max '+s.settings.max_open_positions)+row('Selected markets',`${sel.selected_count||0} / ${sel.scanned||0}`,`${sel.eligible_count||0} eligible · ${sel.trade_ready||0} trade-ready`)+row('Drawdown',num(risk.drawdown_pct)+'%',risk.drawdown_mode||'NORMAL')+row('Risk state',escape(risk.risk_state||'—'),risk.loss_limit_mode||'NORMAL')+row('Last scanner',stamp(s.last_scan_at),s.market_data_mode+' input')+row('Latest PAPER entry',stamp(s.signal_diagnostics?.last_opened_at),'Diagnostics → More / Data Quality');
  $('top-markets').innerHTML=s.top_markets.map(sym=>{let m=s.markets.find(x=>x.symbol===sym);return m?row(sym,ptag(m.decision?.action)+' <span class="badge-value">'+num(m.rank,1)+'</span>',`${m.meta?.asset_class||'—'} · ${m.regime} · ${m.feed_status||'—'}`):''}).join('')||'<p class="muted">Waiting for market data…</p>';
  $('latest-decisions').innerHTML=decisionHtml(s.decisions.slice(0,5));}
 function decisionHtml(items){return items.map(d=>`<div class="decision-card"><div class="decision-heading">${ptag(d.action)} <b>${escape(d.symbol)}</b> <span class="muted">Score ${num(d.score,1)} · ${num(d.confidence,0)}%</span></div><small>${stamp(d.ts)}</small><p>${escape(d.reason)}</p></div>`).join('')||'<p class="muted">No decisions yet. Feed loading or waiting for closed candles.</p>'}
@@ -387,9 +387,60 @@ function renderReplayList(){let rows=app.state.replays||[],select=$('replay-sele
 async function fetchReplay(){if(app.page!=='replay')return;if(!app.replayTrade){renderReplayList();if(!app.replayTrade)return}let id=app.replayTrade;try{app.replay=await api('/api/replay?trade_id='+encodeURIComponent(id));if(id===app.replayTrade)drawReplay()}catch(e){toast(e.message,true)}}
 function drawReplay(){let r=app.replay;if(!r)return;drawCandles($('replay-plot'),r.candles||[],r.metadata||{},r.side);$('replay-info').innerHTML='<div class="mini-stats">'+Object.entries(r.metadata||{}).filter(([k,v])=>['string','number','boolean'].includes(typeof v)).slice(0,30).map(([k,v])=>kv(k,String(v).slice(0,120))).join('')+'</div>'}
 function renderPerformance(){let s=app.state,p=s.performance;$('performance-metrics').innerHTML=metric('Trades',String(p.trades),'Current session')+metric('Realized',money(p.pnl),'PAPER',cls(p.pnl))+metric('Expectancy',money(p.expectancy),'Per trade',cls(p.expectancy))+metric('Win rate',num(p.win_rate,1)+'%',`PF ${num(p.pf)}`);let l=s.lifetime;$('lifetime').innerHTML=row('Archived closed trades',String(l.trades),'Across prior runs')+row('Archived P&L',`<b class="${cls(l.pnl)}">${money(l.pnl)}</b>`,'Research history');}
-function renderShadow(){let s=app.state;$('neural-stats').innerHTML=statObject(s.neural);$('rsi-stats').innerHTML=statObject(s.adaptive_rsi);let l={...s.risk};delete l.neural_edge;delete l.adaptive_rsi_shadow;$('learning-stats').innerHTML=statObject(l,35)}
+function renderShadow(){let s=app.state;$('neural-stats').innerHTML=statObject(s.neural);$('rsi-stats').innerHTML=statObject(s.adaptive_rsi);let l={...s.risk};delete l.neural_edge;delete l.adaptive_rsi_shadow;$('learning-stats').innerHTML=statObject(l,35);renderRejectedShadowResearch()}
 function statObject(obj,max=20){return '<div class="mini-stats">'+Object.entries(obj||{}).filter(([,v])=>v===null||['string','number','boolean'].includes(typeof v)).slice(0,max).map(([k,v])=>kv(k.replaceAll('_',' '),typeof v==='number'?num(v,3):String(v))).join('')+'</div>'}
+const reasonNames={
+ SESSION_POLICY:'Session or time-window gate',MARKET_SAFETY:'Market safety gate',
+ SIGNAL_QUALITY:'Signal strength / structure',LEARNING_GOVERNOR:'Learning governor veto',
+ LEARNING_SYMBOL:'Symbol/direction guard',LEARNING_FAST:'Fast-context guard',
+ LEARNING_SCORE:'Learning score downgrade',EXECUTION_CANDIDATE:'BUY / SELL passed signal analysis',
+ OTHER:'Other'
+};
+function renderSignalDiagnostics(){
+ const target=$('signal-diagnostics'),d=app.state?.signal_diagnostics||{};
+ if(!target)return;
+ const counts=d.current_reasons||{}, since=d.signal_reasons_since_boot||{};
+ const labels=Object.keys(reasonNames);
+ const active=labels.filter(k=>counts[k]||since[k]);
+ const sorted=active.sort((a,b)=>(counts[b]||0)-(counts[a]||0));
+ const last=d.last_opened_at?stamp(d.last_opened_at):'None recorded';
+ const warning=d.no_entry_48h?' · 48+ hours without a new PAPER entry':'';
+ target.innerHTML=
+   row('Most recent PAPER entry',escape(last),d.last_opened_hours_ago==null?'Unknown':num(d.last_opened_hours_ago,1)+' hours ago'+warning)+
+   row('Latest CLOSED PAPER trade',escape(stamp(d.last_closed_at)),
+       d.last_closed_hours_ago==null?'No completed history':num(d.last_closed_hours_ago,1)+' hours ago')+
+   row('Current market decisions',String(Object.values(counts).reduce((a,b)=>a+Number(b||0),0)),
+       'One latest decision per market; not lifetime totals')+
+   sorted.map(k=>row(reasonNames[k],String(counts[k]||0),
+       'Current markets · '+String(since[k]||0)+' observations since server start')).join('')+
+   row('Decision starvation',String(d.decision_starvation_candles??0)+' candles',
+       'No executable BUY/SELL after research')+
+   row('Execution starvation',String(d.execution_starvation_candles??0)+' candles',
+       'BUY/SELL passed signal analysis but did not open')+
+   row('Opportunity recovery enabled',d.opportunity_recovery_enabled?'YES':'NO',
+       'Status only · this screen cannot change thresholds')+
+   Object.entries(d.last_execution_rejections||{}).slice(0,4).map(([k,v])=>
+      row('Last execution rejection',escape(k),String(v)+' candidate(s)')).join('')+
+   '<p class="muted">Example reasons from the current snapshot:</p>'+
+   Object.entries(d.example_reasons||{}).slice(0,6).map(([k,v])=>
+      '<p class="muted">'+escape(reasonNames[k]||k)+': '+escape(v)+'</p>').join('');
+}
+function renderRejectedShadowResearch(){
+ const target=$('blocked-shadow-research'),d=app.state?.signal_diagnostics?.shadow||{};
+ if(!target)return;
+ const groups=d.groups||[];
+ target.innerHTML=row('Resolved examples (latest batch)',String(d.sampled_rows??0),
+    'Up to 300 stored shadow observations · no actual orders')+
+  row('Pending hypothetical checks',String(d.pending??0),
+    'Resolved after future closed candles')+
+  (groups.length?groups.map(x=>row(x.reason||'Other',
+    num(x.average_hypothetical_r,2)+' hypothetical R',
+    String(x.samples)+' samples · '+num(x.positive_pct,1)+'% positive price movements')).join(''):
+    '<p class="muted">No resolved shadow checks yet. Rejected learning signals will be measured after future candles.</p>')+
+  '<p class="muted">'+escape(d.note||'These are price-only hypothetical results, not net trading profits.')+'</p>';
+}
 function renderQuality(){
+ renderSignalDiagnostics();
  let s=app.state,by={},diag=s.feed_diagnostics||{},ready=s.trading_readiness||{};
  s.markets.forEach(m=>{let key=m.feed_status||'NO DATA';by[key]=(by[key]||0)+1});
  let freshness=ready.scope==='CRYPTO_ONLY'?'<span class="positive">CRYPTO 24/7 READY</span>':ready.ready?'<span class="positive">READY TO TEST</span>':'<span class="gold">WAITING FOR LIVE DATA</span>';
