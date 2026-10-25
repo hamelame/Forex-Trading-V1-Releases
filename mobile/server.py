@@ -187,7 +187,7 @@ class MobileTradingEngine(TradingEngine):
                 and str(self.cfg.get("market_data_mode", "")).upper() == "LIVE"
                 and self.cfg.get("mobile_crypto_highvol_bootstrap", False)
                 and self.cfg.get("high_vol_require_positive_edge", True)
-                and d.action in ("BUY", "SELL")
+                and getattr(d, "action", None) in ("BUY", "SELL")
                 and self.regimes.get(s.symbol, regime(s)) == "HIGH VOL"):
             edge = self.learning.execution_edge_score(
                 s.symbol, "HIGH VOL", d.action, s.session
