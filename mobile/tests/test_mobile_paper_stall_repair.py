@@ -72,7 +72,7 @@ class MobilePaperStallRepairTests(unittest.TestCase):
         self.assertTrue(self.e.cfg["mobile_crypto_highvol_bootstrap"])
         self.assertTrue(self.e.cfg["high_vol_require_positive_edge"])
         with patch.object(self.e.learning, "execution_edge_score",
-                          return_value={"label": "UNPROVEN", "samples": 0}), \\
+                          return_value={"label": "UNPROVEN", "samples": 0}), \
              patch.object(TradingEngine, "_open", autospec=True) as core_open:
             self.e._open(self.decision, self.snap)
             core_open.assert_called_once()
@@ -89,7 +89,7 @@ class MobilePaperStallRepairTests(unittest.TestCase):
         def inspect(instance, d, s):
             seen.append(instance.cfg["high_vol_require_positive_edge"])
         with patch.object(self.e.learning, "execution_edge_score",
-                          return_value={"label": "UNPROVEN", "samples": 0}), \\
+                          return_value={"label": "UNPROVEN", "samples": 0}), \
              patch.object(TradingEngine, "_open", autospec=True, side_effect=inspect):
             self.e._open(self.decision, self.snap)
         self.assertEqual(seen, [False])
@@ -107,8 +107,8 @@ class MobilePaperStallRepairTests(unittest.TestCase):
                          self.snap.timestamp)),
         ):
             observed = []
-            with self.subTest(label=edge["label"], score=decision.score, confidence=decision.confidence), \\
-                 patch.object(self.e.learning, "execution_edge_score", return_value=edge), \\
+            with self.subTest(label=edge["label"], score=decision.score, confidence=decision.confidence), \
+                 patch.object(self.e.learning, "execution_edge_score", return_value=edge), \
                  patch.object(TradingEngine, "_open", autospec=True,
                               side_effect=lambda engine, d, s: observed.append(
                                   engine.cfg["high_vol_require_positive_edge"])):
@@ -126,7 +126,7 @@ class MobilePaperStallRepairTests(unittest.TestCase):
         self.runtime.db.conn.commit()
         observed = []
         with patch.object(self.e.learning, "execution_edge_score",
-                          return_value={"label": "UNPROVEN", "samples": 0}), \\
+                          return_value={"label": "UNPROVEN", "samples": 0}), \
              patch.object(TradingEngine, "_open", autospec=True,
                           side_effect=lambda engine, d, s: observed.append(
                               engine.cfg["high_vol_require_positive_edge"])):
