@@ -173,6 +173,42 @@ class MobileTradingEngine(TradingEngine):
         if self.entry_asset_scope == "CRYPTO_ONLY" and asset != "CRYPTO":
             self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
             return
+
+        # v2.9.2.6 MOBILE PAPER ONLY: the HIGH VOL positive-edge hard gate
+        # permanently cold-started genuinely untried crypto setups. A brand-new
+        # HIGH VOL strategy has zero prior positives, so could never collect its
+        # first PAPER outcome, regardless of signal strength. Keep the hard
+        # gate for NEGATIVE / MIXED / previously tested setups. For an exactly
+        # UNPROVEN setup with zero previous HIGH VOL experience, permit ONE
+        # exceptional score+confidence trial per symbol/direction in the ledger.
+        # All downstream live-feed, RSI, health, cost, risk and sizing gates still
+        # run unchanged. EURUSD-only IG DEMO cannot mirror crypto PAPER trades.
+        if (asset == "CRYPTO" and self.cfg.get("paper_only_build", False)
+                and str(self.cfg.get("market_data_mode", "")).upper() == "LIVE"
+                and self.cfg.get("mobile_crypto_highvol_bootstrap", False)
+                and self.cfg.get("high_vol_require_positive_edge", True)
+                and d.action in ("BUY", "SELL")
+                and self.regimes.get(s.symbol, regime(s)) == "HIGH VOL"):
+            edge = self.learning.execution_edge_score(
+                s.symbol, "HIGH VOL", d.action, s.session
+            )
+            strong = (
+                d.score >= float(self.cfg.get("high_vol_min_signal_score", 78)) + 4
+                and d.confidence >= float(self.cfg.get("high_vol_min_confidence", 76)) + 4
+            )
+            if edge.get("label") == "UNPROVEN" and int(edge.get("samples", 0)) == 0 and strong:
+                already_tested = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM learning_experiences "
+                    "WHERE symbol=? AND side=? AND regime='HIGH VOL'",
+                    (s.symbol, d.action),
+                ).fetchone()[0]
+                if not already_tested:
+                    original = self.cfg["high_vol_require_positive_edge"]
+                    try:
+                        self.cfg["high_vol_require_positive_edge"] = False
+                        return super()._open(d, s)
+                    finally:
+                        self.cfg["high_vol_require_positive_edge"] = original
         return super()._open(d, s)
 
 
@@ -215,6 +251,14 @@ class MobileRuntime:
             except (ValueError, OSError, TypeError) as exc:
                 logging.warning("Ignoring unreadable mobile settings: %s", exc)
         self.cfg.update(mode="PAPER", paper_only_build=True, broker="synthetic", neural_edge_shadow_only=True)
+        if self.staged_paper_test:
+            # Mobile-only PAPER correction: a disabled NY forex switch had
+            # excluded all FX symbols outside London/overlap despite existing
+            # strict forex probation. Never permit Asia or rollover by this
+            # change; never write the shared PC config.
+            self.cfg["context_forex_new_york_enabled"] = True
+            self.cfg["forex_probation_enabled"] = True
+            self.cfg["mobile_crypto_highvol_bootstrap"] = True
         # The mobile bridge does not modify the trading strategy defaults.
         db_file = Path(db_path or os.getenv("FX_MOBILE_DB", str(ROOT / "data" / "forex_mobile.db")))
         disk = os.getenv("FX_MOBILE_STORAGE_DIR", "").strip()
@@ -249,6 +293,7 @@ class MobileRuntime:
         self.last_scan_error = None
         self.last_scan_completed_at = None
         self._last_feed_warning = 0.0
+        self._last_no_trade_audit = 0.0
         self.started_at = utcnow()
         self.worker = None
         self.watchdog = None
@@ -299,6 +344,23 @@ class MobileRuntime:
                     self.last_scan_at = utcnow()
                     self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
+                    if (self.engine.enabled
+                            and time.monotonic() - self._last_no_trade_audit >= 600):
+                        self._last_no_trade_audit = time.monotonic()
+                        diagnostic = self._signal_diagnostics()
+                        if diagnostic["no_entry_48h"]:
+                            logging.warning(
+                                "PAPER_STALL_AUDIT last_open_hours=%s "
+                                "current_reasons=%r decisions_since_boot=%r "
+                                "decision_starvation=%s execution_starvation=%s "
+                                "NY_forex_probation=%s",
+                                diagnostic["last_opened_hours_ago"],
+                                diagnostic["current_reasons"],
+                                diagnostic["signal_reasons_since_boot"],
+                                diagnostic["decision_starvation_candles"],
+                                diagnostic["execution_starvation_candles"],
+                                self.cfg.get("context_forex_new_york_enabled", False),
+                            )
                     if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
                         self._last_feed_warning = time.monotonic()
                         feed_errors = getattr(self.feed, '_last_error', {})
@@ -508,6 +570,8 @@ class MobileRuntime:
             "execution_starvation_candles": e.execution_starvation_scans,
             "last_execution_rejections": dict(e.last_gate_reasons),
             "opportunity_recovery_enabled": bool(self.cfg.get("opportunity_recovery_enabled", False)),
+            "ny_forex_probation_paper": bool(self.cfg.get("context_forex_new_york_enabled", False)),
+            "crypto_highvol_bootstrap_paper": bool(self.cfg.get("mobile_crypto_highvol_bootstrap", False)),
             "shadow": {"scope": "LATEST_300_RESOLVED", "sampled_rows": len(rows),
                        "groups": research, "pending": len(e.learning.pending_counterfactuals),
                        "note": "Hypothetical fixed-horizon price moves only. No PAPER or IG orders; not net-profit forecasts."},
