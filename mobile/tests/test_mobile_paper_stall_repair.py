@@ -139,7 +139,8 @@ class MobilePaperStallRepairTests(unittest.TestCase):
         d = Decision("EURUSD", "BUY", 95, 95, "test", 8, 16, snap.timestamp)
         self.e.regimes["EURUSD"] = "HIGH VOL"
         seen = []
-        with patch.object(TradingEngine, "_open", autospec=True,
+        with patch("mobile.server._non_crypto_session_open", return_value=True), \
+             patch.object(TradingEngine, "_open", autospec=True,
                           side_effect=lambda engine, dec, s: seen.append(
                               engine.cfg["high_vol_require_positive_edge"])):
             self.e._open(d, snap)
