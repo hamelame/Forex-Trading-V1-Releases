@@ -335,7 +335,7 @@ class MobileRuntime:
             except (ValueError, OSError, TypeError) as exc:
                 logging.warning("Ignoring unreadable mobile settings: %s", exc)
         self.cfg.update(mode="PAPER", paper_only_build=True, broker="synthetic", neural_edge_shadow_only=True)
-        if self.staged_paper_test and self.cfg.get("adaptive_rsi_shadow_only", True):
+        if self.staged_paper_test and self.cfg.get("adaptive_rsi_shadow_only", False):
             # Keep the declared SHADOW contract: Adaptive RSI collects PAPER
             # outcomes and proposes hypothetical filters, but does not veto a
             # Champion order. The common PC TradingEngine is untouched.
