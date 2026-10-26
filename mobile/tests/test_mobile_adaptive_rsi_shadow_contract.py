@@ -28,6 +28,7 @@ class MobileAdaptiveRsiShadowContractTests(unittest.TestCase):
             "starting_balance": 20000, "paper_trading_capital": 20000,
             "market_data_mode": "LIVE", "selection_mode": "AUTO TOP 10",
             "trading_profile": "AI TRADING",
+            "min_signal_score": 63, "min_confidence": 56,
             "risk_per_trade_pct": 0.4, "max_total_risk_pct": 1.6,
             "adaptive_rsi_shadow_only": shadow_only,
             "adaptive_rsi_execution_gate_enabled": True,
