@@ -27,6 +27,7 @@ from forex_app.database import Database
 from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
 from forex_app.intelligence import regime
+from forex_app.context_edge import session_policy, synthetic_market_mode
 from forex_app.market import SyntheticFeed
 from mobile.crypto_feed import MobileLiveMarketFeed
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
@@ -111,6 +112,89 @@ class MobileTradingEngine(TradingEngine):
         # state. A redeploy cannot rewrite PAPER balance, positions or trades.
         self.signal_gate_counts = Counter()
         self.signal_gate_observations = 0
+        self.post_signal_counts = Counter()
+        self.post_signal_latest = {}
+        self.post_signal_last_cycle = -1
+
+    def _post_signal_eligibility_reason(self, symbol, snapshot, decision, ranking, regime_name):
+        """Read-only mirror of OpportunitySelector._eligible, in the same order.
+
+        To avoid creating trading differences, this must never be consulted
+        to decide eligibility, only to explain an existing refusal.
+        """
+        sel = self.selector
+        asset = instrument_meta(symbol)["asset_class"]
+        if asset not in set(self.cfg.get("enabled_asset_classes",
+                   ["FOREX", "METALS", "ENERGY", "INDICES", "CRYPTO"])):
+            return "ASSET_DISABLED"
+        if not synthetic_market_mode(self.cfg):
+            if asset != "CRYPTO" and not sel._session_allowed(snapshot.session):
+                return "SESSION_DISABLED"
+            if not session_policy(symbol, snapshot.session, self.cfg).get("allowed", True):
+                return "SESSION_POLICY"
+        if float(snapshot.quality) < float(self.cfg.get("selection_min_data_quality",
+                                                    self.cfg.get("min_data_quality",75))):
+            return "DATA_QUALITY"
+        if float(snapshot.spread_pips) > float(self.cfg.get("selection_max_spread",
+                                                        self.cfg.get("max_spread_pips",2.5))):
+            return "SPREAD"
+        if float(decision.score) < float(self.cfg.get("selection_min_ai_score",
+                                                  self.cfg.get("min_signal_score",63))):
+            return "AI_SCORE"
+        if float(decision.confidence) < float(self.cfg.get("selection_min_confidence",
+                                                       self.cfg.get("min_confidence",56))):
+            return "AI_CONFIDENCE"
+        if float(ranking) < float(self.cfg.get("selection_min_market_score",58)):
+            return "MARKET_RANK"
+        if self.cfg.get("pause_on_high_volatility", False) and regime_name=="HIGH VOL":
+            return "HIGH_VOL_PAUSE"
+        return "UNEXPLAINED_SELECTOR_REFUSAL"
+
+    def _post_signal_audit(self):
+        """Record a bounded entry-funnel tally, not a trading or risk input."""
+        counts = Counter()
+        examples = {}
+        selected = set(self.selector.shortlist)
+        eligible = set(self.selector.eligible)
+        for symbol, decision in self.decisions.items():
+            if decision.action not in ("BUY","SELL"):
+                continue
+            snapshot = self.snapshots.get(symbol)
+            if snapshot is None:
+                continue
+            if symbol in selected:
+                key = "SELECTED_BUY_SELL"
+            elif symbol in eligible:
+                key = "NOT_IN_SHORTLIST"
+            else:
+                key = self._post_signal_eligibility_reason(
+                    symbol, snapshot, decision,
+                    self.rankings.get(symbol,0), self.regimes.get(symbol,"MIXED"))
+            counts[key] += 1
+            examples.setdefault(key, {
+                "symbol":symbol,"score":round(float(decision.score),1),
+                "confidence":round(float(decision.confidence),1),
+                "market_rank":round(float(self.rankings.get(symbol,0)),1),
+                "session":str(snapshot.session),
+                "regime":str(self.regimes.get(symbol,"MIXED")),
+            })
+        counts.update({"ORDER_GATE:"+str(k)[:95]:int(v)
+                       for k,v in self.last_gate_reasons.items()})
+        self.post_signal_counts.update(counts)
+        self.post_signal_latest = {"counts":dict(counts),
+                                   "examples":examples,
+                                   "selected_symbols":list(self.selector.shortlist),
+                                   "eligible_count":len(self.selector.eligible),
+                                   "trade_ready":int(self.selector.stats.get("trade_ready",0)),
+                                   "last_status":str(self.last_status)[:240]}
+
+    def scan(self):
+        previous = self.decision_cycle_count
+        super().scan()
+        # Count a closed-candle decision exactly once. Scans without a new bar
+        # only update quotes, and must NOT be miscounted as new opportunities.
+        if self.enabled and self.decision_cycle_count != previous:
+            self._post_signal_audit()
 
     @staticmethod
     def _signal_gate(raw, learned):
@@ -353,13 +437,16 @@ class MobileRuntime:
                                 "PAPER_STALL_AUDIT last_open_hours=%s "
                                 "current_reasons=%r decisions_since_boot=%r "
                                 "decision_starvation=%s execution_starvation=%s "
-                                "NY_forex_probation=%s",
+                                "NY_forex_probation=%s selector=%r post_signal_totals=%r post_signal_latest=%r",
                                 diagnostic["last_opened_hours_ago"],
                                 diagnostic["current_reasons"],
                                 diagnostic["signal_reasons_since_boot"],
                                 diagnostic["decision_starvation_candles"],
                                 diagnostic["execution_starvation_candles"],
                                 self.cfg.get("context_forex_new_york_enabled", False),
+                                dict(self.engine.selector.stats),
+                                dict(self.engine.post_signal_counts),
+                                dict(self.engine.post_signal_latest),
                             )
                     if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
                         self._last_feed_warning = time.monotonic()
@@ -569,6 +656,8 @@ class MobileRuntime:
             "decision_starvation_candles": e.decision_starvation_scans,
             "execution_starvation_candles": e.execution_starvation_scans,
             "last_execution_rejections": dict(e.last_gate_reasons),
+            "post_signal_totals_since_boot": dict(e.post_signal_counts),
+            "post_signal_latest": dict(e.post_signal_latest),
             "opportunity_recovery_enabled": bool(self.cfg.get("opportunity_recovery_enabled", False)),
             "ny_forex_probation_paper": bool(self.cfg.get("context_forex_new_york_enabled", False)),
             "crypto_highvol_bootstrap_paper": bool(self.cfg.get("mobile_crypto_highvol_bootstrap", False)),
