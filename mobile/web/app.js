@@ -421,6 +421,8 @@ function renderSignalDiagnostics(){
        'Status only · this screen cannot change thresholds')+
    row('NY forex session · PAPER probation',d.ny_forex_probation_paper?'ENABLED':'DISABLED',
        'London, overlap, and NY allowed; Asia and rollover remain blocked')+
+   row('Adaptive RSI · PAPER',escape(d.adaptive_rsi_paper_mode||'UNKNOWN'),
+       'SHADOW research continues; no execution veto when configured shadow-only')+
    row('Crypto HIGH VOL cold-start',d.crypto_highvol_bootstrap_paper?'STRICT FIRST TRIAL':'DISABLED',
        'Only virgin setups with exceptional signals; all other safety gates remain active')+
    Object.entries(d.last_execution_rejections||{}).slice(0,4).map(([k,v])=>
