@@ -27,6 +27,7 @@ on:
       - mobile-ig-usdnok-quote-validation-20261012
       - mobile-signal-starvation-diagnostics-20261022
       - mobile-paper-stall-repair-20261025
+      - mobile-post-signal-gate-forensics-20261026
   workflow_dispatch:
 jobs:
   mobile-tests:
