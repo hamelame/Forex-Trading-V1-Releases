@@ -335,6 +335,13 @@ class MobileRuntime:
             except (ValueError, OSError, TypeError) as exc:
                 logging.warning("Ignoring unreadable mobile settings: %s", exc)
         self.cfg.update(mode="PAPER", paper_only_build=True, broker="synthetic", neural_edge_shadow_only=True)
+        if self.staged_paper_test and self.cfg.get("adaptive_rsi_shadow_only", True):
+            # Keep the declared SHADOW contract: Adaptive RSI collects PAPER
+            # outcomes and proposes hypothetical filters, but does not veto a
+            # Champion order. The common PC TradingEngine is untouched.
+            # This corrects the contradictory checked-in configuration where
+            # adaptive_rsi_shadow_only=true AND the hard gate was enabled.
+            self.cfg["adaptive_rsi_execution_gate_enabled"] = False
         if self.staged_paper_test:
             # Mobile-only PAPER correction: a disabled NY forex switch had
             # excluded all FX symbols outside London/overlap despite existing
@@ -660,6 +667,9 @@ class MobileRuntime:
             "post_signal_latest": dict(e.post_signal_latest),
             "opportunity_recovery_enabled": bool(self.cfg.get("opportunity_recovery_enabled", False)),
             "ny_forex_probation_paper": bool(self.cfg.get("context_forex_new_york_enabled", False)),
+            "adaptive_rsi_paper_mode": ("SHADOW ONLY" if self.cfg.get("adaptive_rsi_shadow_only",False)
+                                        and not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
+                                        else "EXECUTION GATE"),
             "crypto_highvol_bootstrap_paper": bool(self.cfg.get("mobile_crypto_highvol_bootstrap", False)),
             "shadow": {"scope": "LATEST_300_RESOLVED", "sampled_rows": len(rows),
                        "groups": research, "pending": len(e.learning.pending_counterfactuals),
