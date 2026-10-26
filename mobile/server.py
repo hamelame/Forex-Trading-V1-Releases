@@ -429,7 +429,7 @@ class MobileRuntime:
                     self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
                     if (self.engine.enabled
-                            and time.monotonic() - self._last_no_trade_audit >= 600):
+                            and time.monotonic() - self._last_no_trade_audit >= 60):
                         self._last_no_trade_audit = time.monotonic()
                         diagnostic = self._signal_diagnostics()
                         if diagnostic["no_entry_48h"]:
