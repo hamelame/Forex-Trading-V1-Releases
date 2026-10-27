@@ -1,8 +1,8 @@
 'use strict';
 const $=id=>document.getElementById(id);
-const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','ig-demo','settings'];
-const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality','ig-demo':'IG DEMO Live Test',settings:'Settings'};
-const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0,igMiniReady:false,igDemoTrial:null,igDemoTrialBusy:false,igAuto:null,igAutoBusy:false,igAutoStartError:''};
+const pages=['dashboard','markets','positions','decisions','trades','replay','performance','shadow','quality','settings'];
+const names={dashboard:'Command Center',markets:'Market Scanner',positions:'Open Positions',decisions:'AI Decision Feed',trades:'Trade Log',replay:'Trade Replay',performance:'Performance Lab',shadow:'Shadow Lab',quality:'Data Quality',settings:'Settings'};
+const app={token:(()=>{try{return sessionStorage.getItem('fx_token')||''}catch(_){return ''}})(),state:null,page:'dashboard',chartSymbol:'',candles:[],replay:null,replayTrade:'',requesting:false,lastCandleAt:0,noticeTimer:null,manualSelected:null,touchScrolling:false,lastScrollAt:0};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v,n=2)=>(Number.isFinite(Number(v))?Number(v).toLocaleString('en-US',{minimumFractionDigits:n,maximumFractionDigits:n}):'—');
 const money=v=>`${Number(v)<0?'-':''}$${num(Math.abs(Number(v)),2)}`;
@@ -51,332 +51,18 @@ async function connect(){
 async function fetchState(silent=true){if(app.requesting||$('app').hidden)return;app.requesting=true;try{app.state=await api('/api/state');if(!app.touchScrolling&&Date.now()-app.lastScrollAt>1000){const y=window.scrollY,ml=$('markets-list'),mlY=ml?.scrollTop||0;render();if(ml&&mlY)ml.scrollTop=mlY;if(y>10&&window.scrollY<y-8)window.scrollTo(0,y);if(app.page==='markets'&&app.chartSymbol&&Date.now()-app.lastCandleAt>15000)await fetchCandles()}}catch(e){if(!silent)toast(e.message,true);else $('engine-status').textContent='OFFLINE'}finally{app.requesting=false}}
 async function cmd(name,payload={}){try{let result=await api('/api/command/'+name,{method:'POST',body:JSON.stringify(payload)});toast(result.message||'Completed');await fetchState(false)}catch(e){toast(e.message,true)}}
 function confirmDialog(title,message,yes,action='Confirm'){return new Promise(resolve=>{let el=$('confirm');$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-ok').textContent=action;el.hidden=false;const done=answer=>{el.hidden=true;$('confirm-ok').onclick=null;$('confirm-cancel').onclick=null;resolve(answer)};$('confirm-ok').onclick=()=>done(true);$('confirm-cancel').onclick=()=>done(false)})}
-function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay();if(page==='quality')refreshIGDemoStatus();if(page==='ig-demo'){app.igMiniReady=false;fetchIGDemoTrialStatus();fetchIGDemoRiskPolicy();fetchIGDemoAutoStatus()}}
-async function refreshIGDemoStatus(){
- const el=$('ig-demo-details'); if(!el||!app.token)return;
- try{
-  const status=await api('/api/ig-demo/status');
-  el.textContent=status.credentials_configured
-   ? 'DEMO credentials configured. Connection not yet tested. PAPER engine remains separate.'
-   : 'Not configured. Add IG_DEMO_API_KEY, IG_DEMO_USERNAME and IG_DEMO_PASSWORD in Render Environment.';
- }catch(err){el.textContent=String(err.message||err)}
-}
-async function testIGDemoConnection(){
- const button=$('ig-demo-check'),el=$('ig-demo-details');
- if(button.disabled)return;
- button.disabled=true;button.textContent='Checking IG DEMO…';
- el.textContent='Testing demo login and account read only. No broker orders.';
- try{
-  const result=await api('/api/ig-demo/check',{method:'POST'});
-  const lines=(result.accounts||[]).map(a=>
-   String(a.type||'Account')+' · '+String(a.currency||'')+
-   ' · Balance '+String(a.balance??'—')+
-   ' · Available '+String(a.available??'—'));
-  el.textContent='CONNECTED · IG DEMO · READ ONLY · No orders allowed\n'+
-   'Accounts: '+String(result.account_count||0)+'\n'+lines.join('\n');
-  toast('IG DEMO connection confirmed · read-only');
- }catch(err){el.textContent='IG DEMO connection failed: '+String(err.message||err);toast('IG DEMO connection failed',true)}
- finally{button.disabled=false;button.textContent='Test IG DEMO Connection'}
-}
-
-function renderIGDemoRisk(p){
- const el=$('ig-demo-risk-policy');if(!el)return;
- const amount=Number(p.indicative_risk_budget);
- const ready=p.indicative_risk_budget!==null&&Number.isFinite(amount);
- el.innerHTML=
-  row('IG DEMO max planned risk',escape(String(p.max_planned_risk_pct)+'%'),'Per proposed trade, before extra slippage and costs')+
-  row('Indicative loss budget',escape(ready?amount.toFixed(2)+' '+(p.budget_unit||''):'Awaiting verified broker funds'),'Recomputed from IG balance and available funds; not an order size')+
-  row('Max simultaneous IG positions',escape(String(p.max_open_ig_positions)))+
-  row('IG DEMO automatic orders','<span class="muted">OFF – NOT ARMED</span>','No broker automation until risk conversion, reconciliation and close are validated')+
-  row('Real-money orders','<span class="muted">DISABLED</span>','IG DEMO only');
-}
-async function fetchIGDemoRiskPolicy(){
- try{const p=await api('/api/ig-demo/risk-policy');renderIGDemoRisk(p)}
- catch(_){const el=$('ig-demo-risk-policy');if(el)el.textContent='Could not load IG DEMO risk policy.'}
-}
-async function checkIGDemoCurrencyRisk(){
- const button=$('ig-demo-currency-check'), panel=$('ig-demo-currency-check-results');
- if(!button||!panel||button.disabled)return;
- button.disabled=true;
- button.textContent='Reading IG DEMO currency and NOK risk…';
- panel.textContent='Verifying broker account, EUR/USD Mini and USD/NOK quote. No orders.';
- try{
-  const p=await api('/api/ig-demo/auto/currency-risk',{method:'POST'});
-  const value=(v,digits=2)=>Number.isFinite(Number(v))?num(v,digits):'NOT VERIFIED';
-  panel.innerHTML='<p class="positive">IG MINI SETTLEMENT AND NOK RISK CHECK PASSED · NO ORDERS</p>'+
-   row('DEMO account currency',escape(p.account_currency||'—'),'Broker account balance currency')+
-   row('Permitted Mini order currency',escape(p.order_settlement_currency||'—'),'Chosen from broker-listed instrument order currencies')+
-   row('Broker USD/NOK conversion',escape(p.broker_conversion_nok_per_usd==null?'Not needed (NOK settlement)':value(p.broker_conversion_nok_per_usd,4)+' NOK/USD'),'Required for USD-settled Mini on a NOK DEMO account')+
-   row('0.5% planned risk budget',escape(value(p.risk_budget_nok)+' NOK'),'Based on IG DEMO funds; not a guaranteed loss cap')+
-   row('Buffered estimated initial-stop loss',escape(value(p.estimated_planned_risk_nok)+' NOK'),'Includes conservative FX and cost allowance')+
-   '<p class="muted">'+escape(p.note||'IG AUTO remains off until deliberately started.')+'</p>';
- }catch(err){
-  panel.textContent='IG MINI RISK CHECK BLOCKED · NO ORDERS SENT: '+String(err.message||err);
- }finally{
-  button.disabled=false;
-  button.textContent='Check IG Mini order currency and NOK risk (read only)';
- }
-}
-
-function renderIGDemoAuto(){
- const p=app.igAuto||{},stage=String(p.stage||'UNKNOWN');
- const armed=p.armed===true,busy=app.igAutoBusy;
- const state=$('ig-demo-auto-stage');if(!state)return;
- state.textContent='IG DEMO AUTO: '+stage+(armed?' · ARMED':' · NOT ARMED');
- $('ig-demo-auto-note').textContent=String(p.note||'Start only after verifying that IG DEMO has no open positions.');
- // Persisted server rejection survives refresh, so the operator can read it
- // next to Start instead of missing a short toast above the current viewport.
- const failure=$('ig-demo-auto-start-error');
- if(failure){
-  const msg=String(app.igAutoStartError||p.last_start_error||'');
-  failure.textContent=msg?'PREVIOUS IG DEMO AUTO start rejection: '+msg+' · Check current prerequisites before trying again.':'';
-  failure.hidden=!msg;
- }
- const panel=$('ig-demo-auto-stats');
- panel.innerHTML=
-  row('Broker & mode','<span class="positive">IG DEMO CFD</span>','No real-money accounts')+
-  row('AI signal','EURUSD BUY only','NEW PAPER trade, after arming; 0.1 Mini; no copied lots')+
-  row('Risk policy',escape(String(p.risk_percent??0.5)+'%'),'Fixed size 0.1 Mini with extra loss buffer and broker stop')+
-  row('IG order settlement currency',escape(p.settlement_currency||'Awaiting IG broker checks'),'IG instrument order currency may differ from NOK account balance')+
-  row('IG trades attempted today',escape(String(p.attempts_today??0)+' / '+String(p.max_attempts_today??2)))+
-  row('Estimated planned risk buffer',escape(p.estimated_risk_buffer_nok==null?'Not checked':num(p.estimated_risk_buffer_nok)+' NOK'),'Planned estimate only; loss can exceed this with slippage/costs')+
-  row('Max permitted planned risk',escape(p.opening_risk_budget_nok==null?'Awaiting broker':num(p.opening_risk_budget_nok)+' NOK'),'0.5% of the lower usable demo funds')+
-  row('Broker-side stop verified',escape(p.broker_stop_verified===true?'YES':'Not currently verified'))+
-  row('Real-money trading','<span class="muted">DISABLED</span>');
- const start=$('ig-demo-auto-start'),stop=$('ig-demo-auto-stop'),refresh=$('ig-demo-auto-refresh');
- const canStart=['STOPPED','CLOSED','WATCHING'].includes(stage);
- start.disabled=busy||armed||!canStart;
- stop.disabled=busy||!armed;
- refresh.disabled=busy;
-}
-async function fetchIGDemoAutoStatus(){
- try{app.igAuto=await api('/api/ig-demo/auto/status');renderIGDemoAuto()}
- catch(err){
-  app.igAuto={stage:'STATUS ERROR',note:'Could not read IG DEMO AUTO. '+String(err.message||err)};
-  renderIGDemoAuto();
- }
-}
-async function checkIGDemoAutoLocalReadiness(){
- const button=$('ig-demo-auto-local-check'), panel=$('ig-demo-auto-local-results');
- if(!button||!panel||button.disabled)return;
- button.disabled=true;
- button.textContent='Checking local prerequisites…';
- panel.textContent='Reading PAPER readiness only. No IG order or broker request.';
- try{
-  const result=await api('/api/ig-demo/auto/readiness');
-  const entries=Array.isArray(result.checks)?result.checks:[];
-  const checks=entries.map(check=>
-    row(String(check.name||'Check'),
-        check.ok===true?'<span class="positive">PASS</span>':'<span class="gold">BLOCKED</span>')
-  ).join('');
-  const verdict=result.local_checks_pass===true
-    ?'<span class="positive">LOCAL CHECKS PASS · IG BROKER NOT YET CHECKED</span>'
-    :'<span class="gold">LOCAL CHECKS BLOCKED · NO BROKER ORDERS</span>';
-  panel.innerHTML='<p>'+verdict+'</p>'+checks+
-    '<p class="muted">'+escape(result.reason||'No details returned')+'</p>';
- }catch(err){
-  panel.textContent='Could not complete read-only readiness check: '+String(err.message||err);
- }finally{
-  button.disabled=false;
-  button.textContent='Check IG AUTO prerequisites (read only)';
- }
-}
-
-async function verifyIGDemoAutoBroker(){
- if(app.igAutoBusy)return;
- app.igAutoBusy=true;renderIGDemoAuto();
- try{
-  app.igAuto=await api('/api/ig-demo/auto/refresh',{method:'POST'});
-  toast('IG DEMO broker: '+String(app.igAuto.stage||'Checked'));
- }catch(err){
-  toast('Broker verification: '+String(err.message||err),true);
-  await fetchIGDemoAutoStatus();
- }finally{
-  app.igAutoBusy=false;renderIGDemoAuto();
- }
-}
-async function igDemoAutoCommand(action,phrase){
- if(app.igAutoBusy)return;
- app.igAutoBusy=true;renderIGDemoAuto();
- try{
-  app.igAuto=await api('/api/ig-demo/auto/'+action,{
-   method:'POST',body:JSON.stringify({confirm:phrase})
-  });
-  app.igAutoStartError='';
-  toast('IG DEMO AUTO: '+String(app.igAuto.stage||'Updated'));
- }catch(err){
-  const reason=String(err.message||err);
-  // Keep actionable rejection on this page, even after polling/rendering.
-  if(action==='start')app.igAutoStartError=reason;
-  toast('IG DEMO AUTO: '+reason,true);
-  await fetchIGDemoAutoStatus();
-  if(action==='start')$('ig-demo-auto-start-error')?.scrollIntoView({block:'center',behavior:'smooth'});
- }finally{
-  app.igAutoBusy=false;renderIGDemoAuto();
- }
-}
-async function startIGDemoAuto(){
- if(app.igAutoBusy||app.igAuto?.armed)return;
- const accepted=await confirmDialog('Start IG DEMO AUTO using VIRTUAL funds?',
-  'This can place actual IG DEMO CFD positions with VIRTUAL funds after the PAPER AI opens a NEW EURUSD BUY. Fixed 0.1 EUR/USD Mini, broker-side stop 20 IG points, target 40, max planned initial stop risk 0.5% and 2 attempts/day. A failed/uncertain order or broker stop blocks further entries. Stops are not guaranteed. Stop button stops NEW entries and does NOT immediately close an open IG position. Start now?',
-  'yes','Start IG DEMO AUTO');
- if(!accepted)return;
- await igDemoAutoCommand('start','START IG DEMO AUTO 0.5%');
-}
-async function stopIGDemoAuto(){
- if(!app.igAuto?.armed||app.igAutoBusy)return;
- const accepted=await confirmDialog('Stop IG DEMO AUTO entries?',
-  'Stop new IG DEMO entries. Existing IG DEMO positions may remain open with their broker-side stop/target until closed. Monitor any open positions in the IG DEMO platform.',
-  'yes','Stop IG entries');
- if(!accepted)return;
- await igDemoAutoCommand('stop','STOP IG DEMO AUTO');
-}
-
-async function checkIGDemoReadiness(){
- const button=$('ig-demo-preflight'),state=$('ig-demo-live-status'),out=$('ig-demo-live-results');
- if(button.disabled)return;
- button.disabled=true;button.textContent='Checking IG DEMO…';
- state.textContent='Loading verified IG DEMO CFD account, existing positions and EURUSD market rules. NO orders.';
- out.textContent='';
- try{
-  const p=await api('/api/ig-demo/preflight',{method:'POST'});
-  if(p.risk_policy)renderIGDemoRisk(p.risk_policy);
-  let m=p.market_candidates||[];
-  const mini=m.find(x=>x.epic==='CS.D.EURUSD.CEEM.IP');
-  const miniCurrencies=Array.isArray(mini?.currencies)?mini.currencies.filter(x=>/^[A-Z]{3}$/.test(String(x))):[];
-  const currencyPlan=p.account_currency==='NOK'
-    ? (miniCurrencies.includes('NOK')?'NOK settlement listed by IG':
-      miniCurrencies.includes('USD')?'USD settlement listed · live USD/NOK risk conversion required':
-      'No supported Mini settlement currency verified')
-    : 'NOK DEMO account required for IG AUTO';
-  app.igMiniReady=m.some(x=>x.epic==='CS.D.EURUSD.CEEM.IP' &&
-    x.type==='CURRENCIES' && x.status==='TRADEABLE' && x.stops_allowed===true);
-  renderIGTrialControls();
-  state.textContent=m.length
-   ? 'IG DEMO CFD CONNECTED · EUR/USD instrument verified. Broker execution remains OFF.'
-   : 'IG DEMO CFD CONNECTED · EUR/USD instrument NOT VERIFIED. All broker orders remain BLOCKED.';
-  const search=(p.search_diagnostics||[]).map(x=>
-   String(x.term)+': '+String(x.results)+' results, '+String(x.pair_matches)+' pair matches').join(' · ');
-  out.innerHTML=
-   row('IG environment','<span class="positive">DEMO CFD</span>','NO live account access')+
-   row('IG available funds',escape(String(p.account_available??'—')+' '+(p.account_currency||'')), 'IG DEMO funds, separate from PAPER')+
-   row('IG balance',escape(String(p.account_balance??'—')+' '+(p.account_currency||'')))+
-   row('Existing IG positions',escape(String(p.existing_ig_positions??'—')),'Must reconcile any existing broker trades before auto mode')+
-   row('Instrument discovery',escape(search||'No IG market search results'),'Read-only IG market search; no broker orders')+
-   row('EUR/USD Mini order currencies',escape(miniCurrencies.join(', ')||'NOT VERIFIED'),'Permitted broker order currencies, not your account balance currency')+
-   row('IG Mini settlement / NOK risk',escape(currencyPlan),'AUTO still rechecks exchange rate, bid/offer, stop and 0.5% budget before entry')+
-   '<h3>EURUSD IG CFD instruments</h3>'+
-   (m.length?m.map(v=>'<div class="panel">'+
-       '<strong>'+escape(v.name)+' · '+escape(v.epic)+'</strong>'+
-       '<div class="mini-stats">'+
-       kv('Verified by',v.source||'IG market details')+
-       kv('Market status',v.status)+kv('Expiry',v.expiry)+
-       kv('Bid / Offer',String(v.bid??'—')+' / '+String(v.offer??'—'))+
-       kv('Minimum size',String(v.minimum_deal_size?.value??'—')+' '+String(v.minimum_deal_size?.unit||''))+
-       kv('Minimum stop distance',String(v.minimum_stop?.value??'—')+' '+String(v.minimum_stop?.unit||''))+
-       kv('Value of one pip',v.value_of_one_pip)+
-       kv('Permitted order currencies',Array.isArray(v.currencies)?v.currencies.join(', '):'UNKNOWN')+
-       kv('Contract size',v.contract_size)+kv('Unit',v.unit)+
-       kv('Stops permitted',String(v.stops_allowed))+
-       kv('Order preference',v.market_order_preference)+
-       '</div></div>').join(''):'<p class="muted">No EUR/USD instrument could be verified for this IG account. Broker execution remains blocked. Search counts above help determine why.</p>')+
-   '<p class="muted">'+escape(p.blocked_reason||'Broker orders are still disabled.')+'</p>';
-  toast(m.length?'IG DEMO EUR/USD market verified · no orders':'IG DEMO account connected; EUR/USD still not verified');
- }catch(err){
-  app.igMiniReady=false;
-  renderIGTrialControls();
-  state.textContent='IG DEMO preflight blocked: '+String(err.message||err);
-  toast('IG DEMO preflight blocked',true);
- }finally{
-  button.disabled=false;button.textContent='Check IG DEMO Trading Readiness';
- }
-}
-
-function igDemoTrialBlockedReason(){
- const trial=app.igDemoTrial,stage=trial?.stage||'UNKNOWN';
- if(app.igDemoTrialBusy)return 'Checking IG DEMO trade status. Wait for the check to finish.';
- if(!trial)return 'Loading the saved one-time IG DEMO trade status. No orders can be sent yet.';
- if(stage==='ERROR')return 'Trial status could not be verified: '+String(trial.last_note||'Request failed')+'. No orders allowed.';
- if(stage==='OPEN')return 'A DEMO test position is already open. Check the position and broker-side stop before doing anything else.';
- if(stage==='STOP_UNVERIFIED')return 'Broker stop-loss is NOT verified. Check IG DEMO directly; no further opening attempt allowed.';
- if(stage!=='NOT_STARTED')return 'One-time test is locked (stage: '+stage+'). Use Verify at IG to reconcile; never retry an uncertain opening.';
- if(!app.igMiniReady)return 'First tap Check IG DEMO Trading Readiness on this page. The EUR/USD Mini quote and instrument must be verified again after leaving this page.';
- return '';
-}
-function renderIGTrialControls(){
- const trial=app.igDemoTrial||{},stage=trial.stage||'UNKNOWN';
- const open=$('ig-demo-trial-open'),close=$('ig-demo-trial-close'),verify=$('ig-demo-trial-refresh');
- if(!open)return;
- const reason=igDemoTrialBlockedReason();
- open.disabled=!!reason;
- open.textContent=reason?'IG DEMO test unavailable':'Place ONE Small IG DEMO Trade';
- close.disabled=app.igDemoTrialBusy||!['OPEN','STOP_UNVERIFIED'].includes(stage);
- verify.disabled=app.igDemoTrialBusy;
- $('ig-demo-trial-stage').textContent='IG DEMO trial: '+stage+
-   (app.igMiniReady?' · Mini instrument validated by market search':' · market readiness must be checked this visit');
- $('ig-demo-trial-note').textContent=String(trial.last_note||'One explicit virtual-money order only. No automatic trade.');
- if(stage==='STOP_UNVERIFIED'){
-  $('ig-demo-trial-note').textContent='WARNING: Broker-side stop NOT VERIFIED. Check position and close it on the IG DEMO platform if necessary.';
- }
- const guidance=$('ig-demo-trial-block-reason');
- if(guidance){
-  guidance.className=reason?'gold':'positive';
-  guidance.textContent=reason?('WHY THE BUTTON IS LOCKED: '+reason):
-    'READY FOR MANUAL DEMO TEST. Confirming the trade is a separate step; IG rules and risk are rechecked before any order.';
- }
-}
-async function fetchIGDemoTrialStatus(){
- try{app.igDemoTrial=await api('/api/ig-demo/trial/status')}
- catch(err){app.igDemoTrial={stage:'ERROR',last_note:err.message||String(err)}}
- renderIGTrialControls();
-}
-async function runIGDemoTrialAction(action, phrase){
- if(app.igDemoTrialBusy)return;
- app.igDemoTrialBusy=true;
- renderIGTrialControls();
- try{
-  app.igDemoTrial=await api('/api/ig-demo/trial/'+action,{
-   method:'POST',body:JSON.stringify(phrase?{confirm:phrase}:{})
-  });
-  toast('IG DEMO: '+String(app.igDemoTrial.stage||'Action submitted'));
- }catch(err){
-  toast(String(err.message||err),true);
-  await fetchIGDemoTrialStatus();
- }finally{
-  app.igDemoTrialBusy=false;
-  renderIGTrialControls();
- }
-}
-async function openIGDemoTrial(){
- const blocked=igDemoTrialBlockedReason();
- if(blocked){toast(blocked,true);return;}
- const title='Place ONE real IG DEMO Mini order?';
- const msg='VIRTUAL FUNDS ONLY. This will BUY 0.1 EUR/USD Mini (10,000 contract), with broker-side stop-loss 20 IG points and take-profit 40 IG points. Stops are not guaranteed. This is a MANUAL connectivity test, NOT an AI signal. A successful order creates a virtual broker position until closed. One opening attempt only. Continue?';
- if(!await confirmDialog(title,msg,'yes','Place ONE DEMO order'))return;
- await runIGDemoTrialAction('open','PLACE ONE IG DEMO MINI BUY 0.1');
-}
-async function closeIGDemoTrial(){
- if(!['OPEN','STOP_UNVERIFIED'].includes(app.igDemoTrial?.stage))return;
- if(!await confirmDialog('Close MY IG DEMO test?',
-   'Sends one close instruction for the specific 0.1 Mini position opened by this trial. No other positions. Verify the close at IG afterward.',
-   'yes','Close DEMO test'))return;
- await runIGDemoTrialAction('close','CLOSE MY IG DEMO MINI TRIAL');
-}
-async function refreshIGDemoTrial(){
- if(app.igDemoTrialBusy)return;
- await runIGDemoTrialAction('refresh','');
-}
-function initPage(){$('ig-demo-check').onclick=testIGDemoConnection;$('ig-demo-preflight').onclick=checkIGDemoReadiness;$('ig-demo-auto-start').onclick=startIGDemoAuto;$('ig-demo-auto-stop').onclick=stopIGDemoAuto;$('ig-demo-auto-refresh').onclick=verifyIGDemoAutoBroker;$('ig-demo-currency-check').onclick=checkIGDemoCurrencyRisk;$('ig-demo-auto-local-check').onclick=checkIGDemoAutoLocalReadiness;$('ig-demo-trial-open').onclick=openIGDemoTrial;$('ig-demo-trial-close').onclick=closeIGDemoTrial;$('ig-demo-trial-refresh').onclick=refreshIGDemoTrial;document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(app.state?.state_stale){toast('PAPER scanner is busy. Wait for the next completed LIVE scan and refresh.',true);return}if(!ready?.ready){toast('Start AI blocked: '+(ready?.reason||'Waiting for fresh LIVE market candles.')+' No orders are sent.',true);return}if(await confirmDialog('Start PAPER AI','Continue simulated trading on fresh LIVE prices? Existing PAPER positions are preserved. No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
-function render(){const s=app.state;if(!s)return;$('status-dot').classList.toggle('active',s.running);$('engine-status').textContent=s.running?'AI ACTIVE':'AI PAUSED';$('version').textContent='v'+s.version;$('about-version').textContent=s.version;$('scan-clock').textContent='Scan '+stamp(s.last_scan_at);const feedExamples=s.feed_diagnostics?.examples||[];$('engine-message').textContent=s.last_scan_error?`SCAN ERROR: ${s.last_scan_error}`:(s.markets.length===0&&feedExamples.length?`LIVE DATA UNAVAILABLE · ${feedExamples.slice(0,2).join(' | ')}`:s.status);const ready=s.trading_readiness||{};const waiting=!ready.ready||!!s.state_stale;$('start').disabled=!!s.running;$('start').textContent=s.running?'▶ AI Running':waiting?'▶ Start AI · Check status':'▶ Start AI';$('start').title=ready.reason||'Waiting for price feed';$('start-hint').textContent=s.running?'PAPER AI is active. IG DEMO uses a separate Start control.':waiting?('Start AI is waiting: '+(s.state_stale?'Scanner busy; previous snapshot may be outdated.':ready.reason||'Need fresh LIVE market data.')+' '+String(ready.fresh??0)+' of '+String(ready.required??3)+' LIVE markets ready. Check Data Quality. Markets and free feeds may be closed or delayed on weekends.'):'PAPER is ready to resume without clearing your saved trades. This never sends IG broker orders.';$('pause').disabled=!s.running;$('open-count').textContent=s.positions.length;$('market-count').textContent=s.symbols.length+' staged markets';$('session-label').textContent=s.markets.find(x=>x.session)?.session||'—';renderDashboard();if(app.page==='markets')renderMarkets();if(app.page==='positions')renderPositions();if(app.page==='decisions')renderDecisions();if(app.page==='trades')renderTrades();if(app.page==='replay')renderReplayList();if(app.page==='performance')renderPerformance();if(app.page==='shadow')renderShadow();if(app.page==='quality')renderQuality();if(app.page==='settings'){if(!document.activeElement?.closest?.('#settings-form'))renderSettings();renderWatchlist()}drawGraphs()}
+function navigate(page){if(!pages.includes(page))return;app.page=page;document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id===page));document.querySelectorAll('.nav-item[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===page));$('page-title').textContent=names[page];$('more-menu').hidden=true;window.scrollTo({top:0,behavior:'instant'});render();if(page==='markets')fetchCandles();if(page==='replay')fetchReplay()}
+function initPage(){document.querySelectorAll('[data-page]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.page)));$('more-nav').onclick=()=>{$('more-menu').hidden=!$('more-menu').hidden};$('refresh').onclick=()=>fetchState(false);$('start').onclick=async()=>{if(app.state?.running)return;const ready=app.state?.trading_readiness;if(!ready?.ready){toast(ready?.reason||'Wait for fresh LIVE market data before starting PAPER AI.',true);return}if(await confirmDialog('Start PAPER AI','Begin a simulated-trading test on fresh LIVE prices? No broker orders will be sent.','yes'))cmd('start')};$('pause').onclick=()=>cmd('pause');$('stop').onclick=async()=>{if(await confirmDialog('Stop AI','Stop opening new positions and KEEP any open PAPER trades?','yes','Keep positions'))cmd('stop',{close_positions:false});else if(await confirmDialog('Stop and close ALL?','Close every open PAPER trade and stop the engine?','yes','Close all'))cmd('stop',{close_positions:true})};$('close-all').onclick=async()=>{if(await confirmDialog('Close all PAPER trades?','This closes the simulated positions at the latest cached prices. AI must be paused.','yes','Close all'))cmd('close-all')};$('new-session').onclick=async()=>{if(await confirmDialog('Reset PAPER session?','Clear visible session P&L and start with configured capital. Requires AI paused and zero open positions.','yes','Reset session'))cmd('new-session')};$('market-search').oninput=renderMarkets;$('market-filter').onchange=renderMarkets;$('decision-filter').onchange=renderDecisions;$('replay-select').onchange=e=>{app.replayTrade=e.target.value;fetchReplay()};$('settings-form').onsubmit=saveSettings;$('disconnect').onclick=logout;$('watch-search').oninput=renderWatchlist;$('watch-save').onclick=()=>cmd('manual-symbols',{symbols:app.manualSelected||[]});window.addEventListener('resize',()=>{if(app.state)drawGraphs()});}
+function render(){const s=app.state;if(!s)return;$('status-dot').classList.toggle('active',s.running);$('engine-status').textContent=s.running?'AI ACTIVE':'AI PAUSED';$('version').textContent='v'+s.version;$('about-version').textContent=s.version;$('scan-clock').textContent='Scan '+stamp(s.last_scan_at);const feedExamples=s.feed_diagnostics?.examples||[];$('engine-message').textContent=s.last_scan_error?`SCAN ERROR: ${s.last_scan_error}`:(s.markets.length===0&&feedExamples.length?`LIVE DATA UNAVAILABLE · ${feedExamples.slice(0,2).join(' | ')}`:s.status);$('start').disabled=!!s.running||!s.trading_readiness?.ready||!!s.state_stale;$('start').title=s.trading_readiness?.reason||'Waiting for price feed';$('pause').disabled=!s.running;$('open-count').textContent=s.positions.length;$('market-count').textContent=s.symbols.length+' test markets';$('session-label').textContent=s.markets.find(x=>x.session)?.session||'—';renderDashboard();if(app.page==='markets')renderMarkets();if(app.page==='positions')renderPositions();if(app.page==='decisions')renderDecisions();if(app.page==='trades')renderTrades();if(app.page==='replay')renderReplayList();if(app.page==='performance')renderPerformance();if(app.page==='shadow')renderShadow();if(app.page==='quality')renderQuality();if(app.page==='settings'){if(!document.activeElement?.closest?.('#settings-form'))renderSettings();renderWatchlist()}drawGraphs()}
 function renderDashboard(){let s=app.state,p=s.performance;
  $('metrics').innerHTML=metric('PAPER equity',money(s.equity),'Balance '+money(s.balance))+metric('Unrealized P&L',money(s.unrealized),'Open simulated trades',cls(s.unrealized))+metric('Realized P&L',money(p.pnl),p.trades+' closed trades',cls(p.pnl))+metric('Win rate',num(p.win_rate,1)+'%',`Profit factor ${num(p.pf)}`,p.win_rate>=50?'positive':'gold');
  let risk=s.risk||{}, sel=s.selection||{};
- const ready=s.trading_readiness||{};$('test-readiness').textContent=(ready.scope==='CRYPTO_ONLY'?'CRYPTO 24/7 PAPER READY':ready.ready?'READY FOR PAPER TEST':'PAPER TEST BLOCKED')+' · '+(ready.reason||'Waiting for scanner');$('test-readiness').className='test-readiness '+(ready.ready?'positive':'gold');
- $('health').innerHTML=row('PAPER test readiness',ready.ready?(ready.scope==='CRYPTO_ONLY'?'CRYPTO ONLY':'READY'):'BLOCKED',`${ready.fresh||0} fresh LIVE quotes / ${ready.required||3} needed · ${ready.reason||'Checking'}`)+row('Crypto LIVE feeds',String(ready.fresh_crypto||0),ready.scope==='CRYPTO_ONLY'?'24/7 PAPER available only on fresh crypto':'Crypto public feeds monitored independently of IG')+row('Active positions',String(s.positions.length),'Max '+s.settings.max_open_positions)+row('Selected markets',`${sel.selected_count||0} / ${sel.scanned||0}`,`${sel.eligible_count||0} eligible · ${sel.trade_ready||0} trade-ready`)+row('Drawdown',num(risk.drawdown_pct)+'%',risk.drawdown_mode||'NORMAL')+row('Risk state',escape(risk.risk_state||'—'),risk.loss_limit_mode||'NORMAL')+row('Last scanner',stamp(s.last_scan_at),s.market_data_mode+' input')+row('Latest PAPER entry',stamp(s.signal_diagnostics?.last_opened_at),'Diagnostics → More / Data Quality');
+ const ready=s.trading_readiness||{};$('test-readiness').textContent=(ready.ready?'READY FOR PAPER TEST':'PAPER TEST BLOCKED')+' · '+(ready.reason||'Waiting for scanner');$('test-readiness').className='test-readiness '+(ready.ready?'positive':'gold');
+ $('health').innerHTML=row('PAPER test readiness',ready.ready?'READY':'BLOCKED',`${ready.fresh||0} fresh LIVE quotes / ${ready.required||3} needed · ${ready.reason||'Checking'}`)+row('Active positions',String(s.positions.length),'Max '+s.settings.max_open_positions)+row('Selected markets',`${sel.selected_count||0} / ${sel.scanned||0}`,`${sel.eligible_count||0} eligible · ${sel.trade_ready||0} trade-ready · CRYPTO ONLY`)+row('Drawdown',num(risk.drawdown_pct)+'%',risk.drawdown_mode||'NORMAL')+row('Risk state',escape(risk.risk_state||'—'),risk.loss_limit_mode||'NORMAL')+row('Last scanner',stamp(s.last_scan_at),s.market_data_mode+' input');
  $('top-markets').innerHTML=s.top_markets.map(sym=>{let m=s.markets.find(x=>x.symbol===sym);return m?row(sym,ptag(m.decision?.action)+' <span class="badge-value">'+num(m.rank,1)+'</span>',`${m.meta?.asset_class||'—'} · ${m.regime} · ${m.feed_status||'—'}`):''}).join('')||'<p class="muted">Waiting for market data…</p>';
  $('latest-decisions').innerHTML=decisionHtml(s.decisions.slice(0,5));}
 function decisionHtml(items){return items.map(d=>`<div class="decision-card"><div class="decision-heading">${ptag(d.action)} <b>${escape(d.symbol)}</b> <span class="muted">Score ${num(d.score,1)} · ${num(d.confidence,0)}%</span></div><small>${stamp(d.ts)}</small><p>${escape(d.reason)}</p></div>`).join('')||'<p class="muted">No decisions yet. Feed loading or waiting for closed candles.</p>'}
-function renderMarkets(){let s=app.state;if(!s)return;let query=$('market-search').value.toUpperCase(),filter=$('market-filter').value;if(!app.chartSymbol)app.chartSymbol=s.selected_chart_symbol||s.top_markets[0]||'EURUSD';let selected=s.selection||{};$('selection-details').textContent=`${selected.mode} · ${selected.eligible_count||0} eligible · ${selected.selected_count||0} selected · ${selected.trade_ready||0} trade-ready`;
+function renderMarkets(){let s=app.state;if(!s)return;let query=$('market-search').value.toUpperCase(),filter=$('market-filter').value;if(!app.chartSymbol)app.chartSymbol=s.selected_chart_symbol||s.top_markets[0]||'BTCUSD';let selected=s.selection||{};$('selection-details').textContent=`${selected.mode} · ${selected.eligible_count||0} eligible · ${selected.selected_count||0} selected · ${selected.trade_ready||0} trade-ready`;
  let list=s.markets.filter(m=>(m.symbol.includes(query)||String(m.meta?.name||'').toUpperCase().includes(query))&&(filter==='ALL'||m.meta?.asset_class===filter));const marketList=$('markets-list'),previousListScroll=marketList.scrollTop,marketHTML=list.map(m=>`<button class="market-row ${app.chartSymbol===m.symbol?'selected':''}" data-symbol="${escape(m.symbol)}"><div><b>${escape(m.symbol)}</b><small>${escape(m.meta?.asset_class)} · ${escape(m.regime)} · ${escape(m.feed_status||'NO DATA')}</small></div><div class="right">${ptag(m.decision?.action)}<small>Rank ${num(m.rank,1)} · RSI ${num(m.rsi,0)}</small></div></button>`).join('')||'<p class="muted">No matching markets.</p>';if(marketList.innerHTML!==marketHTML){marketList.innerHTML=marketHTML;marketList.scrollTop=previousListScroll;}
  $('markets-list').querySelectorAll('[data-symbol]').forEach(el=>el.onclick=async()=>{app.chartSymbol=el.dataset.symbol;cmd('select-chart',{symbol:app.chartSymbol});await fetchCandles();renderMarkets()});let m=s.markets.find(m=>m.symbol===app.chartSymbol);$('chart-title').textContent=app.chartSymbol+' · Candlesticks';$('chart-meta').textContent=m?.feed_status||'NO DATA';$('chart-summary').textContent=m?`${m.meta?.asset_class} · ${m.regime} · ${m.session||'—'} · ${m.decision?.action||'WAIT'} · RSI ${num(m.rsi,1)} · ${m.decision?.reason||''}`:'Waiting for data';drawCandles($('market-plot'),app.candles)}
 async function fetchCandles(){if(app.page!=='markets')return;let symbol=app.chartSymbol||app.state?.selected_chart_symbol;if(!symbol)return;try{let data=await api('/api/candles?symbol='+encodeURIComponent(symbol));if(app.chartSymbol===symbol){app.candles=data.candles||[];app.lastCandleAt=Date.now();drawCandles($('market-plot'),app.candles)}}catch(e){toast(e.message,true)}}
@@ -387,76 +73,15 @@ function renderReplayList(){let rows=app.state.replays||[],select=$('replay-sele
 async function fetchReplay(){if(app.page!=='replay')return;if(!app.replayTrade){renderReplayList();if(!app.replayTrade)return}let id=app.replayTrade;try{app.replay=await api('/api/replay?trade_id='+encodeURIComponent(id));if(id===app.replayTrade)drawReplay()}catch(e){toast(e.message,true)}}
 function drawReplay(){let r=app.replay;if(!r)return;drawCandles($('replay-plot'),r.candles||[],r.metadata||{},r.side);$('replay-info').innerHTML='<div class="mini-stats">'+Object.entries(r.metadata||{}).filter(([k,v])=>['string','number','boolean'].includes(typeof v)).slice(0,30).map(([k,v])=>kv(k,String(v).slice(0,120))).join('')+'</div>'}
 function renderPerformance(){let s=app.state,p=s.performance;$('performance-metrics').innerHTML=metric('Trades',String(p.trades),'Current session')+metric('Realized',money(p.pnl),'PAPER',cls(p.pnl))+metric('Expectancy',money(p.expectancy),'Per trade',cls(p.expectancy))+metric('Win rate',num(p.win_rate,1)+'%',`PF ${num(p.pf)}`);let l=s.lifetime;$('lifetime').innerHTML=row('Archived closed trades',String(l.trades),'Across prior runs')+row('Archived P&L',`<b class="${cls(l.pnl)}">${money(l.pnl)}</b>`,'Research history');}
-function renderShadow(){let s=app.state;$('neural-stats').innerHTML=statObject(s.neural);$('rsi-stats').innerHTML=statObject(s.adaptive_rsi);let l={...s.risk};delete l.neural_edge;delete l.adaptive_rsi_shadow;$('learning-stats').innerHTML=statObject(l,35);renderRejectedShadowResearch()}
+function renderShadow(){let s=app.state;$('neural-stats').innerHTML=statObject(s.neural);$('rsi-stats').innerHTML=statObject(s.adaptive_rsi);let l={...s.risk};delete l.neural_edge;delete l.adaptive_rsi_shadow;$('learning-stats').innerHTML=statObject(l,35)}
 function statObject(obj,max=20){return '<div class="mini-stats">'+Object.entries(obj||{}).filter(([,v])=>v===null||['string','number','boolean'].includes(typeof v)).slice(0,max).map(([k,v])=>kv(k.replaceAll('_',' '),typeof v==='number'?num(v,3):String(v))).join('')+'</div>'}
-const reasonNames={
- SESSION_POLICY:'Session or time-window gate',MARKET_SAFETY:'Market safety gate',
- SIGNAL_QUALITY:'Signal strength / structure',LEARNING_GOVERNOR:'Learning governor veto',
- LEARNING_SYMBOL:'Symbol/direction guard',LEARNING_FAST:'Fast-context guard',
- LEARNING_SCORE:'Learning score downgrade',EXECUTION_CANDIDATE:'BUY / SELL passed signal analysis',
- OTHER:'Other'
-};
-function renderSignalDiagnostics(){
- const target=$('signal-diagnostics'),d=app.state?.signal_diagnostics||{};
- if(!target)return;
- const counts=d.current_reasons||{}, since=d.signal_reasons_since_boot||{};
- const labels=Object.keys(reasonNames);
- const active=labels.filter(k=>counts[k]||since[k]);
- const sorted=active.sort((a,b)=>(counts[b]||0)-(counts[a]||0));
- const last=d.last_opened_at?stamp(d.last_opened_at):'None recorded';
- const warning=d.no_entry_48h?' · 48+ hours without a new PAPER entry':'';
- target.innerHTML=
-   row('Most recent PAPER entry',escape(last),d.last_opened_hours_ago==null?'Unknown':num(d.last_opened_hours_ago,1)+' hours ago'+warning)+
-   row('Latest CLOSED PAPER trade',escape(stamp(d.last_closed_at)),
-       d.last_closed_hours_ago==null?'No completed history':num(d.last_closed_hours_ago,1)+' hours ago')+
-   row('Current market decisions',String(Object.values(counts).reduce((a,b)=>a+Number(b||0),0)),
-       'One latest decision per market; not lifetime totals')+
-   sorted.map(k=>row(reasonNames[k],String(counts[k]||0),
-       'Current markets · '+String(since[k]||0)+' observations since server start')).join('')+
-   row('Decision starvation',String(d.decision_starvation_candles??0)+' candles',
-       'No executable BUY/SELL after research')+
-   row('Execution starvation',String(d.execution_starvation_candles??0)+' candles',
-       'BUY/SELL passed signal analysis but did not open')+
-   row('Opportunity recovery enabled',d.opportunity_recovery_enabled?'YES':'NO',
-       'Status only · this screen cannot change thresholds')+
-   row('NY forex session · PAPER probation',d.ny_forex_probation_paper?'ENABLED':'DISABLED',
-       'London, overlap, and NY allowed; Asia and rollover remain blocked')+
-   row('Adaptive RSI · PAPER',escape(d.adaptive_rsi_paper_mode||'UNKNOWN'),
-       'SHADOW research continues; no execution veto when configured shadow-only')+
-   row('FX BUY + SELL PAPER research',d.fx_buy_sell_research_paper?'ACTIVE (NON-EURUSD)':'OFF',
-       'Maximum '+String(d.fx_research_daily_limit??2)+' trials per UTC day · ≤'+
-       String(d.fx_research_max_risk_pct??0.05)+'% planned stop risk each · no IG mirror')+
-   row('Crypto HIGH VOL cold-start',d.crypto_highvol_bootstrap_paper?'STRICT FIRST TRIAL':'DISABLED',
-       'Only virgin setups with exceptional signals; all other safety gates remain active')+
-   Object.entries(d.last_execution_rejections||{}).slice(0,4).map(([k,v])=>
-      row('Last execution rejection',escape(k),String(v)+' candidate(s)')).join('')+
-   '<p class="muted">Example reasons from the current snapshot:</p>'+
-   Object.entries(d.example_reasons||{}).slice(0,6).map(([k,v])=>
-      '<p class="muted">'+escape(reasonNames[k]||k)+': '+escape(v)+'</p>').join('');
-}
-function renderRejectedShadowResearch(){
- const target=$('blocked-shadow-research'),d=app.state?.signal_diagnostics?.shadow||{};
- if(!target)return;
- const groups=d.groups||[];
- target.innerHTML=row('Resolved examples (latest batch)',String(d.sampled_rows??0),
-    'Up to 300 stored shadow observations · no actual orders')+
-  row('Pending hypothetical checks',String(d.pending??0),
-    'Resolved after future closed candles')+
-  (groups.length?groups.map(x=>row(x.reason||'Other',
-    num(x.average_hypothetical_r,2)+' hypothetical R',
-    String(x.samples)+' samples · '+num(x.positive_pct,1)+'% positive price movements')).join(''):
-    '<p class="muted">No resolved shadow checks yet. Rejected learning signals will be measured after future candles.</p>')+
-  '<p class="muted">'+escape(d.note||'These are price-only hypothetical results, not net trading profits.')+'</p>';
-}
 function renderQuality(){
- renderSignalDiagnostics();
  let s=app.state,by={},diag=s.feed_diagnostics||{},ready=s.trading_readiness||{};
  s.markets.forEach(m=>{let key=m.feed_status||'NO DATA';by[key]=(by[key]||0)+1});
- let freshness=ready.scope==='CRYPTO_ONLY'?'<span class="positive">CRYPTO 24/7 READY</span>':ready.ready?'<span class="positive">READY TO TEST</span>':'<span class="gold">WAITING FOR LIVE DATA</span>';
+ let freshness=ready.ready?'<span class="positive">READY TO TEST</span>':'<span class="gold">WAITING FOR LIVE DATA</span>';
  let storage=s.paper_storage||{};
  let details=row('PAPER history storage',storage.persistent?'<span class="positive">PERSISTENT DISK</span>':'<span class="gold">TEMPORARY /tmp</span>',storage.error||((storage.auto_resume_pending?'Resume will wait for live data':'Restart protection requires a mounted disk')))+
  row('PAPER readiness',freshness,ready.reason||'No scanner results')+
- row('LIVE crypto markets',escape(String(ready.fresh_crypto||0)),ready.scope==='CRYPTO_ONLY'?'24/7 crypto PAPER enabled; IG forex remains separate':'Crypto uses independent 24/7 public prices')+
   row('Live market feed',escape((ready.fresh||0)+' / '+(s.symbols?.length||0)+' fresh'),'Required '+(ready.required||3)+' · LIVE only')+
   row('Scan age',escape(ready.last_scan_age_seconds===null?'Never':num(ready.last_scan_age_seconds||0,1)+' sec'),'Market scanner freshness')+
   row('LIVE provider progress',escape((diag.fetch_attempts||0)+' attempts · '+(diag.inflight||0)+' pending'),(diag.candle_histories||0)+' markets with candle history · '+(diag.failed_fetches||0)+' provider errors')+
@@ -483,4 +108,4 @@ $('connect').onclick=connect;
 $('token').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connect()}};
 $('login-status').textContent='Login ready. Enter your token and tap Connect.';
 if(app.token){$('token').value=app.token;connect()}
-setInterval(()=>{if(!$('app').hidden)fetchState();if(!$('app').hidden&&app.page==='ig-demo')fetchIGDemoAutoStatus()},5000);
+setInterval(()=>{if(!$('app').hidden)fetchState()},5000);
