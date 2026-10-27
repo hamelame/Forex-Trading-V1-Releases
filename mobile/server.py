@@ -154,6 +154,13 @@ class MobileRuntime:
             mode="PAPER", paper_only_build=True, broker="synthetic",
             neural_edge_shadow_only=True, selection_mode="AUTO TOP 5",
             market_scan_top_n=5, enabled_asset_classes=["CRYPTO"],
+            context_crypto_24_7=True,
+            # Global session switches run BEFORE the crypto-aware context
+            # policy. Rollover=False used to block crypto at 17:00 NY,
+            # despite "24/7" and fresh exchange quotes.
+            allow_asia_session=True, allow_london_session=True,
+            allow_new_york_session=True, allow_overlap_session=True,
+            allow_rollover_session=True,
         )
         # Previous user settings are kept on disk, but cannot silently
         # reintroduce non-crypto markets during this temporary rollback.
@@ -597,6 +604,17 @@ class MobileRuntime:
                 if "paper_trading_capital" in changes:
                     e.apply_paper_capital(changes.pop("paper_trading_capital"), start_new_session=False)
                 self.cfg.update(changes)
+                # Temporary rollback contract is hard CRYPTO ONLY / 24x7.
+                # Ordinary risk/quality settings remain editable. A saved
+                # forex-era manual or rollover setting cannot silently halt
+                # crypto after Settings is saved.
+                self.cfg.update(
+                    selection_mode="AUTO TOP 5",market_scan_top_n=5,
+                    enabled_asset_classes=["CRYPTO"],context_crypto_24_7=True,
+                    allow_asia_session=True,allow_london_session=True,
+                    allow_new_york_session=True,allow_overlap_session=True,
+                    allow_rollover_session=True,
+                )
                 e.apply_config(self.cfg, force_reselect=bool({"selection_mode", "market_scan_top_n"} & set(changes)))
                 self._save_config()
                 return {"message": "Settings saved. Capital applies on next new session."}
