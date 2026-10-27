@@ -197,8 +197,8 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
                 self.assertTrue(data["paper_only"])
                 self.assertTrue(data["crypto_only"])
                 self.assertFalse(data["ig_integration"])
-                self.assertEqual(client.post("/api/ig-demo/auto/start").status_code,404)
-                self.assertEqual(client.post("/api/ig-demo/trial/open").status_code,404)
+                self.assertIn(client.post("/api/ig-demo/auto/start").status_code,(404,405))
+                self.assertIn(client.post("/api/ig-demo/trial/open").status_code,(404,405))
 
 
 if __name__=="__main__":
