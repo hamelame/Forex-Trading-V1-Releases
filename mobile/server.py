@@ -6,7 +6,6 @@ Production requires FX_MOBILE_TOKEN (>=16 chars), HTTPS and a single worker.
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
 import hmac
 import json
 import logging
@@ -26,8 +25,6 @@ from forex_app import __version__
 from forex_app.database import Database
 from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
-from forex_app.intelligence import regime
-from forex_app.context_edge import session_policy, synthetic_market_mode
 from forex_app.market import SyntheticFeed
 from mobile.crypto_feed import MobileLiveMarketFeed
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
@@ -103,322 +100,17 @@ def valid_setting(key, value):
 
 
 class MobileTradingEngine(TradingEngine):
-    """Mobile PAPER safety gate and shadow-only rejection telemetry."""
+    """Restored pre-IG mobile PAPER motor with a hard CRYPTO-only entry gate."""
     entry_asset_scope = "MULTI_MARKET"
 
-    def __init__(self, cfg, feed, db):
-        super().__init__(cfg, feed, db)
-        # Diagnostic counts are volatile and are NEVER part of risk/checkpoint
-        # state. A redeploy cannot rewrite PAPER balance, positions or trades.
-        self.signal_gate_counts = Counter()
-        self.signal_gate_observations = 0
-        self.post_signal_counts = Counter()
-        self.post_signal_latest = {}
-        self.post_signal_last_cycle = -1
-
-    def _post_signal_eligibility_reason(self, symbol, snapshot, decision, ranking, regime_name):
-        """Read-only mirror of OpportunitySelector._eligible, in the same order.
-
-        To avoid creating trading differences, this must never be consulted
-        to decide eligibility, only to explain an existing refusal.
-        """
-        sel = self.selector
-        asset = instrument_meta(symbol)["asset_class"]
-        if asset not in set(self.cfg.get("enabled_asset_classes",
-                   ["FOREX", "METALS", "ENERGY", "INDICES", "CRYPTO"])):
-            return "ASSET_DISABLED"
-        if not synthetic_market_mode(self.cfg):
-            if asset != "CRYPTO" and not sel._session_allowed(snapshot.session):
-                return "SESSION_DISABLED"
-            if not session_policy(symbol, snapshot.session, self.cfg).get("allowed", True):
-                return "SESSION_POLICY"
-        if float(snapshot.quality) < float(self.cfg.get("selection_min_data_quality",
-                                                    self.cfg.get("min_data_quality",75))):
-            return "DATA_QUALITY"
-        if float(snapshot.spread_pips) > float(self.cfg.get("selection_max_spread",
-                                                        self.cfg.get("max_spread_pips",2.5))):
-            return "SPREAD"
-        if float(decision.score) < float(self.cfg.get("selection_min_ai_score",
-                                                  self.cfg.get("min_signal_score",63))):
-            return "AI_SCORE"
-        if float(decision.confidence) < float(self.cfg.get("selection_min_confidence",
-                                                       self.cfg.get("min_confidence",56))):
-            return "AI_CONFIDENCE"
-        if float(ranking) < float(self.cfg.get("selection_min_market_score",58)):
-            return "MARKET_RANK"
-        if self.cfg.get("pause_on_high_volatility", False) and regime_name=="HIGH VOL":
-            return "HIGH_VOL_PAUSE"
-        return "UNEXPLAINED_SELECTOR_REFUSAL"
-
-    def _post_signal_audit(self):
-        """Record a bounded entry-funnel tally, not a trading or risk input."""
-        counts = Counter()
-        examples = {}
-        selected = set(self.selector.shortlist)
-        eligible = set(self.selector.eligible)
-        for symbol, decision in self.decisions.items():
-            if decision.action not in ("BUY","SELL"):
-                continue
-            snapshot = self.snapshots.get(symbol)
-            if snapshot is None:
-                continue
-            if symbol in selected:
-                key = "SELECTED_BUY_SELL"
-            elif symbol in eligible:
-                key = "NOT_IN_SHORTLIST"
-            else:
-                key = self._post_signal_eligibility_reason(
-                    symbol, snapshot, decision,
-                    self.rankings.get(symbol,0), self.regimes.get(symbol,"MIXED"))
-            counts[key] += 1
-            examples.setdefault(key, {
-                "symbol":symbol,"score":round(float(decision.score),1),
-                "confidence":round(float(decision.confidence),1),
-                "market_rank":round(float(self.rankings.get(symbol,0)),1),
-                "session":str(snapshot.session),
-                "regime":str(self.regimes.get(symbol,"MIXED")),
-            })
-        # Group numeric/volatile veto details into stable gate names.
-        # This keeps stalled-engine warning logs bounded rather than growing
-        # without limit (the earlier logs reached tens of KB per minute).
-        for reason, count in self.last_gate_reasons.items():
-            root = str(reason).split(" · ", 1)[0][:80] or "UNKNOWN"
-            counts["ORDER_GATE:" + root] += int(count)
-        self.post_signal_counts.update(counts)
-        self.post_signal_latest = {"counts":dict(counts),
-                                   "examples":examples,
-                                   "selected_symbols":list(self.selector.shortlist),
-                                   "eligible_count":len(self.selector.eligible),
-                                   "trade_ready":int(self.selector.stats.get("trade_ready",0)),
-                                   "last_status":str(self.last_status)[:240]}
-
-    def scan(self):
-        previous = self.decision_cycle_count
-        super().scan()
-        # Count a closed-candle decision exactly once. Scans without a new bar
-        # only update quotes, and must NOT be miscounted as new opportunities.
-        if self.enabled and self.decision_cycle_count != previous:
-            self._post_signal_audit()
-
-    @staticmethod
-    def _signal_gate(raw, learned):
-        """Label WHY an existing Champion decision did not become executable.
-
-        These labels are observational: no score, action, risk or session gate
-        is changed. Kept intentionally bounded for an inexpensive mobile UI.
-        """
-        reason = str(raw.reason or "").upper()
-        learned_reason = str(learned.reason or "").upper()
-        if raw.action == "BLOCK":
-            return ("SESSION_POLICY" if any(k in reason for k in
-                    ("WRONG_SESSION", "SESSION_DISABLED", "ROLLOVER_THIN"))
-                    else "MARKET_SAFETY")
-        if raw.action == "WAIT":
-            return "SIGNAL_QUALITY"
-        if raw.action in ("BUY", "SELL") and learned.action == "WAIT":
-            if "GOVERNOR RESEARCH-ONLY" in learned_reason:
-                return "LEARNING_GOVERNOR"
-            if "SYMBOLGUARD" in learned_reason or "SYMBOL/DIRECTION TEMPORARILY SUPPRESSED" in learned_reason:
-                return "LEARNING_SYMBOL"
-            if "FAST CONTEXT SUPPRESSED" in learned_reason or "FASTGUARD" in learned_reason:
-                return "LEARNING_FAST"
-            return "LEARNING_SCORE"
-        return "EXECUTION_CANDIDATE" if learned.action in ("BUY", "SELL") else "OTHER"
-
-    def _research_decision(self, s, liveness_relax=0.0):
-        # This matches TradingEngine._research_decision exactly for trading.
-        # Observe learning vetoes in counterfactual SHADOW only; the returned
-        # decision and all live execution gates are unchanged.
-        raw = self.champion.decide(s, self.currency_strength, liveness_relax=liveness_relax)
-        rg = regime(s)
-        learned = self.learning.adjust_decision(raw, s, rg)
-        if self.enabled:
-            label = self._signal_gate(raw, learned)
-            self.signal_gate_counts[label] += 1
-            self.signal_gate_observations += 1
-            if raw.action in ("BUY", "SELL") and learned.action == "WAIT" and self.cfg.get(
-                "counterfactual_learning_enabled", True
-            ):
-                if label == "LEARNING_GOVERNOR":
-                    note = "LEARNING_VETO · GOVERNOR"
-                elif label == "LEARNING_SYMBOL":
-                    note = "LEARNING_VETO · SYMBOL"
-                elif label == "LEARNING_FAST":
-                    note = "LEARNING_VETO · FAST"
-                else:
-                    note = "LEARNING_VETO · SCORE"
-                self.learning.observe_blocked(raw, s, rg, note, self.scan_count)
-        return learned, rg
-
-    def _fx_paper_research_allowed(self, d, s):
-        """Permit one very small PAPER-only research BUY *or* SELL when the
-        historical FX probation rule is the sole additional hurdle.
-
-        This deliberately cannot invent a signal, mirror to IG EURUSD BUY,
-        bypass ordinary risk/session/price gates, retry past losing contexts,
-        or modify any shared PC application setting. Existing positions win.
-        """
-        if not (self.enabled and self.cfg.get("paper_only_build") is True
-                and self.cfg.get("mode") == "PAPER"
-                and self.cfg.get("broker") == "synthetic"
-                and self.cfg.get("mobile_fx_paper_research_enabled") is True
-                and self.cfg.get("trading_profile") == "AI TRADING"
-                and str(self.cfg.get("market_data_mode","")).upper() == "LIVE"
-                and getattr(self.feed,"requires_fresh_live_data",False)
-                and self.entry_asset_scope == "MULTI_MARKET"):
-            return False
-        if (getattr(d,"action",None) not in ("BUY","SELL")
-                or s.symbol == "EURUSD"  # IG DEMO AUTO mirrors EURUSD BUY.
-                or instrument_meta(s.symbol).get("asset_class") != "FOREX"
-                or s.session not in ("London","London + New York")
-                or str(getattr(s,"feed_status","")).upper() != "LIVE"
-                or not _non_crypto_session_open()
-                or self.positions):
-            return False
-        age=float(getattr(s,"data_age_seconds",99999))
-        if (not math.isfinite(age) or age < 0 or age > 120
-                or float(s.quality) < 85 or float(s.spread_pips) > 1.5
-                or float(d.score) < 70 or float(d.confidence) < 66):
-            return False
-        try:
-            stamp=datetime.fromisoformat(str(s.timestamp).replace("Z","+00:00"))
-            wall_age=(datetime.now(timezone.utc)-stamp).total_seconds()
-            if stamp.tzinfo is None or not -30 <= wall_age <= 150:
-                return False
-        except (ValueError,TypeError,OverflowError):
-            return False
-
-        rg=self.regimes.get(s.symbol,regime(s))
-        if rg not in ("TREND","RANGE","REVERSAL"):
-            return False
-        # Never promote a previously losing regime/side nor run into recovery,
-        # circuit breaker, sick-context or directional-risk protection.
-        if self.risk.recovery_state(self.decision_cycle_count)[0] in ("COOLDOWN","EMERGENCY"):
-            return False
-        edge=self.learning.execution_edge_score(s.symbol,rg,d.action,s.session)
-        if edge.get("label") not in ("UNPROVEN","MIXED"):
-            return False
-        sym=self.learning.symbol_stats_for(s.symbol,d.action)
-        if (sym and int(sym.get("recent_samples",0)) >= 6
-                and (float(sym.get("expectancy_r",0)) < 0
-                     or float(sym.get("pf",1)) < 0.90)):
-            return False
-        from forex_app.context_edge import session_policy, entry_location_context
-        if not session_policy(s.symbol,s.session,self.cfg).get("allowed",False):
-            return False
-        loc=entry_location_context(s,d.action,rg,self.cfg)
-        health=self.learning.context_health(
-            s.symbol,rg,d.action,s.session,loc.get("location","UNKNOWN"))
-        guard=self.learning.runtime_context_guard(
-            s.symbol,rg,d.action,s.session,self.decision_cycle_count)
-        directional=self.learning.directional_health(
-            s.symbol,rg,d.action,s.session,loc.get("location","UNKNOWN"))
-        if (not health.get("allow",True)
-                or not guard.get("allow",True)
-                or guard.get("state")=="WATCH"
-                or health.get("state") in ("WATCH","BLOCKED")
-                or directional.get("state") in ("WATCH","SEVERE")):
-            return False
-        effective=float(d.confidence)
-        effective-=max(0,-float(health.get("score",0)))*float(
-            self.cfg.get("context_health_confidence_penalty_points",25))
-        effective-=max(0,-float(directional.get("score",0)))*float(
-            self.cfg.get("directional_health_confidence_penalty_points",16))
-        if effective < 57.0:
-            return False
-
-        # One position total and maximum two trials in the UTC day. Both
-        # BUY and SELL share the cap; closed rows stay as the audit trail.
-        today=datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00")
-        rows=self.db.conn.execute(
-            "SELECT symbol,side FROM trades WHERE brain=? AND opened_at>=?",
-            ("Mobile FX PAPER Research",today)
-        ).fetchall()
-        return (len(rows)<2 and
-                not any(r["symbol"]==s.symbol and r["side"]==d.action for r in rows))
-
     def _open(self, d, s):
-        if self.entry_asset_scope == "BLOCKED":
-            self.last_open_block_reason = "PAPER market data not ready; all new entries blocked."
+        if instrument_meta(s.symbol).get("asset_class") != "CRYPTO":
+            self.last_open_block_reason = "CRYPTO ONLY rollback: non-crypto PAPER entries disabled."
             return
-        asset = instrument_meta(s.symbol).get("asset_class")
-        if asset != "CRYPTO" and not _non_crypto_session_open():
-            self.last_open_block_reason = "Weekend market closed: non-crypto PAPER entry blocked."
+        if self.entry_asset_scope not in ("CRYPTO_ONLY","MULTI_MARKET","SYNTHETIC"):
+            self.last_open_block_reason = "CRYPTO ONLY: waiting for fresh LIVE market data."
             return
-        if self.entry_asset_scope == "CRYPTO_ONLY" and asset != "CRYPTO":
-            self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
-            return
-
-        # Small evidence-gathering lane for *both* original BUY and SELL
-        # signals on NON-EURUSD forex. Only the historical FX probation veto
-        # is bypassed; all TradingEngine._open technical, execution, quality,
-        # sizing, circuit breaker, loss and portfolio constraints still run.
-        if self._fx_paper_research_allowed(d,s):
-            originals={key:self.cfg.get(key) for key in (
-                "forex_probation_enabled","risk_per_trade_pct",
-                "equity_sizing_max_trade_risk_pct",
-            )}
-            before=len(self.positions)
-            research=dataclasses.replace(
-                d,brain="Mobile FX PAPER Research",
-                reason=str(d.reason)+" | SMALL PAPER RESEARCH · NO IG")
-            try:
-                self.cfg["forex_probation_enabled"]=False
-                self.cfg["risk_per_trade_pct"]=min(
-                    float(self.cfg.get("risk_per_trade_pct",0.4)),0.06)
-                self.cfg["equity_sizing_max_trade_risk_pct"]=min(
-                    float(self.cfg.get("equity_sizing_max_trade_risk_pct",0.18)),0.05)
-                super()._open(research,s)
-            finally:
-                for key,value in originals.items():
-                    if value is None:
-                        self.cfg.pop(key,None)
-                    else:
-                        self.cfg[key]=value
-            if len(self.positions)>before:
-                p=self.positions[-1]
-                logging.warning(
-                    "MOBILE_FX_PAPER_RESEARCH_OPEN symbol=%s side=%s "
-                    "risk_usd=%.2f brain=%s",s.symbol,d.action,
-                    p.risk_amount,p.brain)
-            return
-
-        # v2.9.2.6 MOBILE PAPER ONLY: the HIGH VOL positive-edge hard gate
-        # permanently cold-started genuinely untried crypto setups. A brand-new
-        # HIGH VOL strategy has zero prior positives, so could never collect its
-        # first PAPER outcome, regardless of signal strength. Keep the hard
-        # gate for NEGATIVE / MIXED / previously tested setups. For an exactly
-        # UNPROVEN setup with zero previous HIGH VOL experience, permit ONE
-        # exceptional score+confidence trial per symbol/direction in the ledger.
-        # All downstream live-feed, RSI, health, cost, risk and sizing gates still
-        # run unchanged. EURUSD-only IG DEMO cannot mirror crypto PAPER trades.
-        if (asset == "CRYPTO" and self.cfg.get("paper_only_build", False)
-                and str(self.cfg.get("market_data_mode", "")).upper() == "LIVE"
-                and self.cfg.get("mobile_crypto_highvol_bootstrap", False)
-                and self.cfg.get("high_vol_require_positive_edge", True)
-                and getattr(d, "action", None) in ("BUY", "SELL")
-                and self.regimes.get(s.symbol, regime(s)) == "HIGH VOL"):
-            edge = self.learning.execution_edge_score(
-                s.symbol, "HIGH VOL", d.action, s.session
-            )
-            strong = (
-                d.score >= float(self.cfg.get("high_vol_min_signal_score", 78)) + 4
-                and d.confidence >= float(self.cfg.get("high_vol_min_confidence", 76)) + 4
-            )
-            if edge.get("label") == "UNPROVEN" and int(edge.get("samples", 0)) == 0 and strong:
-                already_tested = self.db.conn.execute(
-                    "SELECT COUNT(*) FROM learning_experiences "
-                    "WHERE symbol=? AND side=? AND regime='HIGH VOL'",
-                    (s.symbol, d.action),
-                ).fetchone()[0]
-                if not already_tested:
-                    original = self.cfg["high_vol_require_positive_edge"]
-                    try:
-                        self.cfg["high_vol_require_positive_edge"] = False
-                        return super()._open(d, s)
-                    finally:
-                        self.cfg["high_vol_require_positive_edge"] = original
-        return super()._open(d, s)
+        return super()._open(d,s)
 
 
 class MobileRuntime:
@@ -432,18 +124,17 @@ class MobileRuntime:
         # Mobile-only staged PAPER test universe: bounded startup work on the
         # free Render instance. Never rewrite the PC config or strategy.
         self.full_symbol_count = len(self.cfg["symbols"])
+        # Restore stable 10 October LIVE crypto feed (no IG), but lock this
+        # mobile service to crypto regardless of an older saved watchlist or
+        # FX_MOBILE_TEST_FULL_UNIVERSE environment setting. No PC config writes.
         test_symbols = (
-            "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD",
-            "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "XAUUSD", "XAGUSD",
-            # Eight liquid, supported mobile crypto feeds; no meme coins.
             "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
             "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
         )
-        self.staged_paper_test = str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE" and os.getenv("FX_MOBILE_TEST_FULL_UNIVERSE", "0") != "1"
-        if self.staged_paper_test:
-            self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]
-            if not self.cfg["symbols"]:
-                raise RuntimeError("No staged PAPER test markets found in market configuration")
+        self.staged_paper_test = True
+        self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]
+        if not self.cfg["symbols"] or "BTCUSD" not in self.cfg["symbols"] or "ETHUSD" not in self.cfg["symbols"]:
+            raise RuntimeError("CRYPTO ONLY rollback requires BTCUSD and ETHUSD in configured universe")
         # Restore only previously validated mutable user controls, not strategy internals.
         self.settings_path = Path(os.getenv("FX_MOBILE_SETTINGS", str(ROOT / "data" / "mobile_settings.json")))
         if self.settings_path.is_file():
@@ -459,25 +150,21 @@ class MobileRuntime:
                         self.cfg[key] = list(dict.fromkeys(value))[:25]
             except (ValueError, OSError, TypeError) as exc:
                 logging.warning("Ignoring unreadable mobile settings: %s", exc)
-        self.cfg.update(mode="PAPER", paper_only_build=True, broker="synthetic", neural_edge_shadow_only=True)
-        if self.staged_paper_test and self.cfg.get("adaptive_rsi_shadow_only", False):
-            # Keep the declared SHADOW contract: Adaptive RSI collects PAPER
-            # outcomes and proposes hypothetical filters, but does not veto a
-            # Champion order. The common PC TradingEngine is untouched.
-            # This corrects the contradictory checked-in configuration where
-            # adaptive_rsi_shadow_only=true AND the hard gate was enabled.
-            self.cfg["adaptive_rsi_execution_gate_enabled"] = False
-        if self.staged_paper_test:
-            # Mobile-only PAPER correction: a disabled NY forex switch had
-            # excluded all FX symbols outside London/overlap despite existing
-            # strict forex probation. Never permit Asia or rollover by this
-            # change; never write the shared PC config.
-            self.cfg["context_forex_new_york_enabled"] = True
-            self.cfg["forex_probation_enabled"] = True
-            self.cfg["mobile_crypto_highvol_bootstrap"] = True
-            # Opt-in by deployed mobile build, never persisted to shared
-            # desktop config or enabled in PC / IG DEMO.
-            self.cfg["mobile_fx_paper_research_enabled"] = True
+        self.cfg.update(
+            mode="PAPER", paper_only_build=True, broker="synthetic",
+            neural_edge_shadow_only=True, selection_mode="AUTO TOP 5",
+            market_scan_top_n=5, enabled_asset_classes=["CRYPTO"],
+        )
+        # Previous user settings are kept on disk, but cannot silently
+        # reintroduce non-crypto markets during this temporary rollback.
+        self.cfg["manual_selected_symbols"] = []
+        if self.cfg.get("selected_chart_symbol") not in self.cfg["symbols"]:
+            self.cfg["selected_chart_symbol"] = "BTCUSD"
+        logging.warning(
+            "CRYPTO_ONLY_ROLLBACK pre-IG WSGI/PAPER, symbols=%s, "
+            "selection=AUTO TOP 5, broker=synthetic",
+            ",".join(self.cfg["symbols"]),
+        )
         # The mobile bridge does not modify the trading strategy defaults.
         db_file = Path(db_path or os.getenv("FX_MOBILE_DB", str(ROOT / "data" / "forex_mobile.db")))
         disk = os.getenv("FX_MOBILE_STORAGE_DIR", "").strip()
@@ -512,7 +199,6 @@ class MobileRuntime:
         self.last_scan_error = None
         self.last_scan_completed_at = None
         self._last_feed_warning = 0.0
-        self._last_no_trade_audit = 0.0
         self.started_at = utcnow()
         self.worker = None
         self.watchdog = None
@@ -553,7 +239,10 @@ class MobileRuntime:
                     # Assess the last completed feed scan before each entry pass.
                     # Every market still refreshes; crypto-only PAPER cannot
                     # open a non-crypto position until full readiness returns.
-                    self.engine.entry_asset_scope = self.trading_readiness().get("scope", "MULTI_MARKET")
+                    ready = self.trading_readiness()
+                    self.engine.entry_asset_scope = (
+                        "CRYPTO_ONLY" if ready.get("ready") else "BLOCKED"
+                    )
                     self.engine.scan()
                     if self.auto_resume_pending and self.trading_readiness_after_scan():
                         self.engine.set_enabled(True, reset_on_start=False)
@@ -563,26 +252,6 @@ class MobileRuntime:
                     self.last_scan_at = utcnow()
                     self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
-                    if (self.engine.enabled
-                            and time.monotonic() - self._last_no_trade_audit >= 60):
-                        self._last_no_trade_audit = time.monotonic()
-                        diagnostic = self._signal_diagnostics()
-                        if diagnostic["no_entry_48h"]:
-                            logging.warning(
-                                "PAPER_STALL_AUDIT last_open_hours=%s "
-                                "current_reasons=%r decisions_since_boot=%r "
-                                "decision_starvation=%s execution_starvation=%s "
-                                "NY_forex_probation=%s selector=%r post_signal_totals=%r post_signal_latest=%r",
-                                diagnostic["last_opened_hours_ago"],
-                                diagnostic["current_reasons"],
-                                diagnostic["signal_reasons_since_boot"],
-                                diagnostic["decision_starvation_candles"],
-                                diagnostic["execution_starvation_candles"],
-                                self.cfg.get("context_forex_new_york_enabled", False),
-                                dict(self.engine.selector.stats),
-                                dict(self.engine.post_signal_counts),
-                                dict(self.engine.post_signal_latest),
-                            )
                     if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
                         self._last_feed_warning = time.monotonic()
                         feed_errors = getattr(self.feed, '_last_error', {})
@@ -708,105 +377,6 @@ class MobileRuntime:
                     "Waiting for 3 fresh LIVE markets or 1 fresh BTC/ETH crypto feed"
                 )}
 
-    def _signal_diagnostics(self):
-        """Read-only mobile breakdown; never changes the Champion or its gates."""
-        e = self.engine
-        counts = Counter()
-        samples = {}
-        for d in e.decisions.values():
-            reason = str(d.reason or "")
-            upper = reason.upper()
-            if d.action in ("BUY", "SELL"):
-                key = "EXECUTION_CANDIDATE"
-            elif "GOVERNOR RESEARCH-ONLY" in upper:
-                key = "LEARNING_GOVERNOR"
-            elif "SYMBOL/DIRECTION TEMPORARILY SUPPRESSED" in upper:
-                key = "LEARNING_SYMBOL"
-            elif "FAST CONTEXT SUPPRESSED" in upper:
-                key = "LEARNING_FAST"
-            elif "WRONG_SESSION" in upper or "SESSION_DISABLED" in upper or "ROLLOVER_THIN" in upper:
-                key = "SESSION_POLICY"
-            elif d.action == "BLOCK":
-                key = "MARKET_SAFETY"
-            else:
-                key = "SIGNAL_QUALITY"
-            counts[key] += 1
-            if key not in samples:
-                samples[key] = str(d.symbol) + " · " + reason[:180]
-
-        last_closed = self.db.conn.execute("SELECT MAX(closed_at) FROM trades").fetchone()[0]
-        last_opened = self.db.conn.execute("SELECT MAX(opened_at) FROM trades").fetchone()[0]
-        if e.positions:
-            newest_open = max(str(p.opened_at) for p in e.positions)
-            last_opened = max(str(last_opened or ""), newest_open)
-
-        def elapsed_hours(stamp):
-            if not stamp:
-                return None
-            try:
-                ts = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    return None
-                return round(max(0.0, (datetime.now(timezone.utc)-ts).total_seconds()/3600), 1)
-            except (ValueError, TypeError, OverflowError):
-                return None
-
-        # These hypothetical returns are close-to-close at a fixed horizon,
-        # NOT broker fills, net P&L, or evidence of real execution.
-        rows = self.db.counterfactuals(300)
-        bucket = {}
-        for item in rows:
-            reason = str(item["block_reason"] or "")
-            group = ("LEARNING_VETO" if reason.startswith("LEARNING_VETO") else
-                     reason.split(" · ")[0][:55] or "OTHER")
-            b = bucket.setdefault(group, {"samples": 0, "sum_r": 0.0, "positive": 0})
-            try:
-                r = float(item["hypothetical_r"])
-            except (ValueError, TypeError):
-                continue
-            if not math.isfinite(r):
-                continue
-            b["samples"] += 1
-            b["sum_r"] += r
-            b["positive"] += int(r > 0)
-        research = sorted(
-            ({"reason": k, "samples": v["samples"],
-              "average_hypothetical_r": round(v["sum_r"]/v["samples"], 3),
-              "positive_pct": round(100*v["positive"]/v["samples"], 1)}
-             for k, v in bucket.items() if v["samples"]),
-            key=lambda x: (-x["samples"], x["reason"])
-        )[:8]
-        hours = elapsed_hours(last_opened)
-        return {
-            "scope": "CURRENT_MARKET_SNAPSHOTS",
-            "current_reasons": dict(counts),
-            "example_reasons": samples,
-            "signal_observations_since_boot": e.signal_gate_observations,
-            "signal_reasons_since_boot": dict(e.signal_gate_counts),
-            "last_opened_at": last_opened,
-            "last_opened_hours_ago": hours,
-            "last_closed_at": last_closed,
-            "last_closed_hours_ago": elapsed_hours(last_closed),
-            "no_entry_48h": bool(e.enabled and hours is not None and hours >= 48),
-            "decision_starvation_candles": e.decision_starvation_scans,
-            "execution_starvation_candles": e.execution_starvation_scans,
-            "last_execution_rejections": dict(e.last_gate_reasons),
-            "post_signal_totals_since_boot": dict(e.post_signal_counts),
-            "post_signal_latest": dict(e.post_signal_latest),
-            "opportunity_recovery_enabled": bool(self.cfg.get("opportunity_recovery_enabled", False)),
-            "ny_forex_probation_paper": bool(self.cfg.get("context_forex_new_york_enabled", False)),
-            "adaptive_rsi_paper_mode": ("SHADOW ONLY" if self.cfg.get("adaptive_rsi_shadow_only",False)
-                                        and not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
-                                        else "EXECUTION GATE"),
-            "crypto_highvol_bootstrap_paper": bool(self.cfg.get("mobile_crypto_highvol_bootstrap", False)),
-            "fx_buy_sell_research_paper": bool(self.cfg.get("mobile_fx_paper_research_enabled", False)),
-            "fx_research_daily_limit": 2,
-            "fx_research_max_risk_pct": 0.05,
-            "shadow": {"scope": "LATEST_300_RESOLVED", "sampled_rows": len(rows),
-                       "groups": research, "pending": len(e.learning.pending_counterfactuals),
-                       "note": "Hypothetical fixed-horizon price moves only. No PAPER or IG orders; not net-profit forecasts."},
-        }
-
     def _learning(self):
         if time.monotonic() - self._learning_at > 15:
             self._cached_learning = clean_value(self.engine.learning_summary())
@@ -910,7 +480,6 @@ class MobileRuntime:
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
                 "risk": self._learning(), "selection": e.selection_summary(),
-                "signal_diagnostics": self._signal_diagnostics(),
                 "exposure": e.exposure_summary(), "currency_strength": e.strength_summary(),
                 "neural": e.neural.summary(), "adaptive_rsi": e.adaptive_rsi.summary(),
                 "positions": e.positions, "trades": session_trades, "equity_history": equity_rows,
