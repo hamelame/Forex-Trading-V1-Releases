@@ -183,6 +183,42 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
         finally:
             restored.close()
 
+    def test_crypto_trades_may_be_considered_in_every_session_including_rollover(self):
+        from forex_app.context_edge import session_policy
+        r=self.make_runtime()
+        try:
+            for session in ("Asia","London","London + New York",
+                            "New York","Rollover / Thin"):
+                with self.subTest(session=session):
+                    policy=session_policy("BTCUSD",session,r.cfg)
+                    self.assertTrue(policy["allowed"])
+                    self.assertEqual(policy["code"],"CRYPTO_24_7")
+            self.assertTrue(r.cfg["allow_rollover_session"])
+            self.assertTrue(r.cfg["context_crypto_24_7"])
+            self.assertEqual(r.cfg["symbols"],CRYPTO)
+            self.assertNotIn("allow_rollover_session",self.base,
+                             "Shared PC config must never be rewritten")
+        finally:
+            r.close()
+
+    def test_settings_save_cannot_disable_crypto_rollover_or_auto_top5(self):
+        r=self.make_runtime()
+        try:
+            result=r.command("settings",{"values":{
+                "allow_rollover_session":False,
+                "selection_mode":"MANUAL",
+                "market_scan_top_n":15}})
+            self.assertIn("saved",result["message"].lower())
+            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 5")
+            self.assertEqual(r.cfg["market_scan_top_n"],5)
+            self.assertTrue(r.cfg["allow_rollover_session"])
+            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO"])
+            from forex_app.context_edge import session_policy
+            self.assertTrue(session_policy("ETHUSD","Rollover / Thin",r.cfg)["allowed"])
+            self.assertEqual(json.loads(self.cfg_path.read_text()),self.base)
+        finally:
+            r.close()
+
     def test_wsgi_has_no_ig_routes_or_background_broker_worker(self):
         with patch.dict(os.environ,{"FX_MOBILE_TOKEN":"rollback-test-token-1234567890"}):
             import importlib
