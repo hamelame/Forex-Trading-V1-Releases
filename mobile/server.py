@@ -178,8 +178,12 @@ class MobileTradingEngine(TradingEngine):
                 "session":str(snapshot.session),
                 "regime":str(self.regimes.get(symbol,"MIXED")),
             })
-        counts.update({"ORDER_GATE:"+str(k)[:95]:int(v)
-                       for k,v in self.last_gate_reasons.items()})
+        # Group numeric/volatile veto details into stable gate names.
+        # This keeps stalled-engine warning logs bounded rather than growing
+        # without limit (the earlier logs reached tens of KB per minute).
+        for reason, count in self.last_gate_reasons.items():
+            root = str(reason).split(" · ", 1)[0][:80] or "UNKNOWN"
+            counts["ORDER_GATE:" + root] += int(count)
         self.post_signal_counts.update(counts)
         self.post_signal_latest = {"counts":dict(counts),
                                    "examples":examples,
@@ -246,6 +250,93 @@ class MobileTradingEngine(TradingEngine):
                 self.learning.observe_blocked(raw, s, rg, note, self.scan_count)
         return learned, rg
 
+    def _fx_paper_research_allowed(self, d, s):
+        """Permit one very small PAPER-only research BUY *or* SELL when the
+        historical FX probation rule is the sole additional hurdle.
+
+        This deliberately cannot invent a signal, mirror to IG EURUSD BUY,
+        bypass ordinary risk/session/price gates, retry past losing contexts,
+        or modify any shared PC application setting. Existing positions win.
+        """
+        if not (self.enabled and self.cfg.get("paper_only_build") is True
+                and self.cfg.get("mode") == "PAPER"
+                and self.cfg.get("broker") == "synthetic"
+                and self.cfg.get("mobile_fx_paper_research_enabled") is True
+                and self.cfg.get("trading_profile") == "AI TRADING"
+                and str(self.cfg.get("market_data_mode","")).upper() == "LIVE"
+                and getattr(self.feed,"requires_fresh_live_data",False)
+                and self.entry_asset_scope == "MULTI_MARKET"):
+            return False
+        if (getattr(d,"action",None) not in ("BUY","SELL")
+                or s.symbol == "EURUSD"  # IG DEMO AUTO mirrors EURUSD BUY.
+                or instrument_meta(s.symbol).get("asset_class") != "FOREX"
+                or s.session not in ("London","London + New York")
+                or str(getattr(s,"feed_status","")).upper() != "LIVE"
+                or not _non_crypto_session_open()
+                or self.positions):
+            return False
+        age=float(getattr(s,"data_age_seconds",99999))
+        if (not math.isfinite(age) or age < 0 or age > 120
+                or float(s.quality) < 85 or float(s.spread_pips) > 1.5
+                or float(d.score) < 70 or float(d.confidence) < 66):
+            return False
+        try:
+            stamp=datetime.fromisoformat(str(s.timestamp).replace("Z","+00:00"))
+            wall_age=(datetime.now(timezone.utc)-stamp).total_seconds()
+            if stamp.tzinfo is None or not -30 <= wall_age <= 150:
+                return False
+        except (ValueError,TypeError,OverflowError):
+            return False
+
+        rg=self.regimes.get(s.symbol,regime(s))
+        if rg not in ("TREND","RANGE","REVERSAL"):
+            return False
+        # Never promote a previously losing regime/side nor run into recovery,
+        # circuit breaker, sick-context or directional-risk protection.
+        if self.risk.recovery_state(self.decision_cycle_count)[0] != "NORMAL":
+            return False
+        edge=self.learning.execution_edge_score(s.symbol,rg,d.action,s.session)
+        if edge.get("label") not in ("UNPROVEN","MIXED"):
+            return False
+        sym=self.learning.symbol_stats_for(s.symbol,d.action)
+        if (sym and int(sym.get("recent_samples",0)) >= 6
+                and (float(sym.get("expectancy_r",0)) < 0
+                     or float(sym.get("pf",1)) < 0.90)):
+            return False
+        from forex_app.context_edge import session_policy, entry_location_context
+        if not session_policy(s.symbol,s.session,self.cfg).get("allowed",False):
+            return False
+        loc=entry_location_context(s,d.action,rg,self.cfg)
+        health=self.learning.context_health(
+            s.symbol,rg,d.action,s.session,loc.get("location","UNKNOWN"))
+        guard=self.learning.runtime_context_guard(
+            s.symbol,rg,d.action,s.session,self.decision_cycle_count)
+        directional=self.learning.directional_health(
+            s.symbol,rg,d.action,s.session,loc.get("location","UNKNOWN"))
+        if (not health.get("allow",True)
+                or not guard.get("allow",True)
+                or guard.get("state")=="WATCH"
+                or health.get("state") in ("WATCH","BLOCKED")
+                or directional.get("state") in ("WATCH","SEVERE")):
+            return False
+        effective=float(d.confidence)
+        effective-=max(0,-float(health.get("score",0)))*float(
+            self.cfg.get("context_health_confidence_penalty_points",25))
+        effective-=max(0,-float(directional.get("score",0)))*float(
+            self.cfg.get("directional_health_confidence_penalty_points",16))
+        if effective < 57.0:
+            return False
+
+        # One position total and maximum two trials in the UTC day. Both
+        # BUY and SELL share the cap; closed rows stay as the audit trail.
+        today=datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00")
+        rows=self.db.conn.execute(
+            "SELECT symbol,side FROM trades WHERE brain=? AND opened_at>=?",
+            ("Mobile FX PAPER Research",today)
+        ).fetchall()
+        return (len(rows)<2 and
+                not any(r["symbol"]==s.symbol and r["side"]==d.action for r in rows))
+
     def _open(self, d, s):
         if self.entry_asset_scope == "BLOCKED":
             self.last_open_block_reason = "PAPER market data not ready; all new entries blocked."
@@ -256,6 +347,40 @@ class MobileTradingEngine(TradingEngine):
             return
         if self.entry_asset_scope == "CRYPTO_ONLY" and asset != "CRYPTO":
             self.last_open_block_reason = "Crypto-only PAPER mode: non-crypto entry blocked."
+            return
+
+        # Small evidence-gathering lane for *both* original BUY and SELL
+        # signals on NON-EURUSD forex. Only the historical FX probation veto
+        # is bypassed; all TradingEngine._open technical, execution, quality,
+        # sizing, circuit breaker, loss and portfolio constraints still run.
+        if self._fx_paper_research_allowed(d,s):
+            originals={key:self.cfg.get(key) for key in (
+                "forex_probation_enabled","risk_per_trade_pct",
+                "equity_sizing_max_trade_risk_pct",
+            )}
+            before=len(self.positions)
+            research=dataclasses.replace(
+                d,brain="Mobile FX PAPER Research",
+                reason=str(d.reason)+" | SMALL PAPER RESEARCH · NO IG")
+            try:
+                self.cfg["forex_probation_enabled"]=False
+                self.cfg["risk_per_trade_pct"]=min(
+                    float(self.cfg.get("risk_per_trade_pct",0.4)),0.06)
+                self.cfg["equity_sizing_max_trade_risk_pct"]=min(
+                    float(self.cfg.get("equity_sizing_max_trade_risk_pct",0.18)),0.05)
+                super()._open(research,s)
+            finally:
+                for key,value in originals.items():
+                    if value is None:
+                        self.cfg.pop(key,None)
+                    else:
+                        self.cfg[key]=value
+            if len(self.positions)>before:
+                p=self.positions[-1]
+                logging.warning(
+                    "MOBILE_FX_PAPER_RESEARCH_OPEN symbol=%s side=%s "
+                    "risk_usd=%.2f brain=%s",s.symbol,d.action,
+                    p.risk_amount,p.brain)
             return
 
         # v2.9.2.6 MOBILE PAPER ONLY: the HIGH VOL positive-edge hard gate
@@ -350,6 +475,9 @@ class MobileRuntime:
             self.cfg["context_forex_new_york_enabled"] = True
             self.cfg["forex_probation_enabled"] = True
             self.cfg["mobile_crypto_highvol_bootstrap"] = True
+            # Opt-in by deployed mobile build, never persisted to shared
+            # desktop config or enabled in PC / IG DEMO.
+            self.cfg["mobile_fx_paper_research_enabled"] = True
         # The mobile bridge does not modify the trading strategy defaults.
         db_file = Path(db_path or os.getenv("FX_MOBILE_DB", str(ROOT / "data" / "forex_mobile.db")))
         disk = os.getenv("FX_MOBILE_STORAGE_DIR", "").strip()
@@ -671,6 +799,9 @@ class MobileRuntime:
                                         and not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
                                         else "EXECUTION GATE"),
             "crypto_highvol_bootstrap_paper": bool(self.cfg.get("mobile_crypto_highvol_bootstrap", False)),
+            "fx_buy_sell_research_paper": bool(self.cfg.get("mobile_fx_paper_research_enabled", False)),
+            "fx_research_daily_limit": 2,
+            "fx_research_max_risk_pct": 0.05,
             "shadow": {"scope": "LATEST_300_RESOLVED", "sampled_rows": len(rows),
                        "groups": research, "pending": len(e.learning.pending_counterfactuals),
                        "note": "Hypothetical fixed-horizon price moves only. No PAPER or IG orders; not net-profit forecasts."},
