@@ -196,6 +196,20 @@ class MobileFxBuySellPaperRecoveryTests(unittest.TestCase):
             self.assertFalse(self.e._fx_paper_research_allowed(self.d,self.s))
         self.assertEqual(self.runtime.db.lifetime_trade_summary()["trades"],2)
 
+    def test_position_sizer_keeps_actual_stop_risk_within_research_cap(self):
+        # Check the real RiskEngine math, not just the temporary config passed
+        # to the parent engine. Fractional PAPER lots must never round UP risk.
+        capital=self.e.balance
+        for side in ("BUY","SELL"):
+            lots,actual_risk=self.e.risk.size(
+                capital,self.s.symbol,self.s.mid,self.d.stop_pips,1.0,
+                capital_basis=capital,risk_cap_pct=0.05,
+                max_risk_amount=capital*0.0005)
+            self.assertGreater(lots,0)
+            self.assertGreater(actual_risk,0)
+            self.assertLessEqual(actual_risk,capital*0.0005+0.001)
+        self.assertEqual(len(self.e.positions),0)
+
     def test_post_signal_logs_group_numeric_gate_details(self):
         e=self.e
         e.last_gate_reasons={
