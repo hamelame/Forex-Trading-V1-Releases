@@ -423,6 +423,9 @@ function renderSignalDiagnostics(){
        'London, overlap, and NY allowed; Asia and rollover remain blocked')+
    row('Adaptive RSI · PAPER',escape(d.adaptive_rsi_paper_mode||'UNKNOWN'),
        'SHADOW research continues; no execution veto when configured shadow-only')+
+   row('FX BUY + SELL PAPER research',d.fx_buy_sell_research_paper?'ACTIVE (NON-EURUSD)':'OFF',
+       'Maximum '+String(d.fx_research_daily_limit??2)+' trials per UTC day · ≤'+
+       String(d.fx_research_max_risk_pct??0.05)+'% planned stop risk each · no IG mirror')+
    row('Crypto HIGH VOL cold-start',d.crypto_highvol_bootstrap_paper?'STRICT FIRST TRIAL':'DISABLED',
        'Only virgin setups with exceptional signals; all other safety gates remain active')+
    Object.entries(d.last_execution_rejections||{}).slice(0,4).map(([k,v])=>
