@@ -293,7 +293,7 @@ class MobileTradingEngine(TradingEngine):
             return False
         # Never promote a previously losing regime/side nor run into recovery,
         # circuit breaker, sick-context or directional-risk protection.
-        if self.risk.recovery_state(self.decision_cycle_count)[0] != "NORMAL":
+        if self.risk.recovery_state(self.decision_cycle_count)[0] in ("COOLDOWN","EMERGENCY"):
             return False
         edge=self.learning.execution_edge_score(s.symbol,rg,d.action,s.session)
         if edge.get("label") not in ("UNPROVEN","MIXED"):
