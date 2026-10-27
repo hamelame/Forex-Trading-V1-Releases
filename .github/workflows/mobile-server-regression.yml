@@ -29,6 +29,7 @@ on:
       - mobile-paper-stall-repair-20261025
       - mobile-post-signal-gate-forensics-20261026
       - mobile-adaptive-rsi-shadow-gate-20261026
+      - mobile-buy-sell-paper-recovery-20261027
   workflow_dispatch:
 jobs:
   mobile-tests:
