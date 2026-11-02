@@ -363,7 +363,7 @@ class MobileRuntime:
             "order_gate_totals":dict(self._diag_gates),
             "last_order_gate":dict(last_gates),
             "last_block_category":self._rejection_category(
-                e.last_open_block_reason or e.last_status),
+                getattr(e,"last_open_block_reason","") or e.last_status),
             "adaptive_rsi_mode":("SHADOW ONLY" if
                 self.cfg.get("adaptive_rsi_shadow_only",False) and
                 not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
