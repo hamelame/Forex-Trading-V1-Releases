@@ -75,7 +75,31 @@ function drawReplay(){let r=app.replay;if(!r)return;drawCandles($('replay-plot')
 function renderPerformance(){let s=app.state,p=s.performance;$('performance-metrics').innerHTML=metric('Trades',String(p.trades),'Current session')+metric('Realized',money(p.pnl),'PAPER',cls(p.pnl))+metric('Expectancy',money(p.expectancy),'Per trade',cls(p.expectancy))+metric('Win rate',num(p.win_rate,1)+'%',`PF ${num(p.pf)}`);let l=s.lifetime;$('lifetime').innerHTML=row('Archived closed trades',String(l.trades),'Across prior runs')+row('Archived P&L',`<b class="${cls(l.pnl)}">${money(l.pnl)}</b>`,'Research history');}
 function renderShadow(){let s=app.state;$('neural-stats').innerHTML=statObject(s.neural);$('rsi-stats').innerHTML=statObject(s.adaptive_rsi);let l={...s.risk};delete l.neural_edge;delete l.adaptive_rsi_shadow;$('learning-stats').innerHTML=statObject(l,35)}
 function statObject(obj,max=20){return '<div class="mini-stats">'+Object.entries(obj||{}).filter(([,v])=>v===null||['string','number','boolean'].includes(typeof v)).slice(0,max).map(([k,v])=>kv(k.replaceAll('_',' '),typeof v==='number'?num(v,3):String(v))).join('')+'</div>'}
+function renderCryptoDiagnostics(){
+ const e=$('crypto-diag'),d=app.state?.crypto_diagnostics||{};
+ if(!e)return;
+ const count=o=>Object.entries(o||{}).map(([name,n])=>row(name,String(n))).join('');
+ e.innerHTML=
+  row('AI engine',d.active?'AI ACTIVE':'AI PAUSED','PAPER only · no IG')+
+  row('Market readiness',escape(d.readiness_scope||'—'),escape(d.readiness_reason||''))+
+  row('Fresh crypto markets',String(d.fresh_crypto??0),'LIVE candles, not synthetic')+
+  row('Completed decision cycles',String(d.decision_cycles??0),'Closed candle cycles since PAPER checkpoint')+
+  row('Eligible / selected / ready',[
+       d.selection?.eligible??0,d.selection?.selected??0,d.selection?.trade_ready??0
+      ].join(' / '),'Market Selector pipeline')+
+  row('Adaptive RSI',escape(d.adaptive_rsi_mode||'—'),
+      'SHADOW ONLY does not veto PAPER orders')+
+  row('HIGH VOL positive history required',d.high_vol_positive_edge_required?'YES':'NO',
+      'An UNPROVEN high-volatility setup may remain research-only')+
+  row('Latest execution blocker',escape(d.last_block_category||'NONE'))+
+  '<p class="muted">Current market decisions</p>'+count(d.actions_current)+
+  '<p class="muted">Decisions counted since server start</p>'+count(d.actions_since_start)+
+  '<p class="muted">Order rejections counted since server start</p>'+
+  (count(d.order_gate_totals)||'<p class="muted">No execution candidates counted yet.</p>')+
+  '<p class="muted">Feed state</p>'+count(d.feed_status);
+}
 function renderQuality(){
+ renderCryptoDiagnostics();
  let s=app.state,by={},diag=s.feed_diagnostics||{},ready=s.trading_readiness||{};
  s.markets.forEach(m=>{let key=m.feed_status||'NO DATA';by[key]=(by[key]||0)+1});
  let freshness=ready.ready?'<span class="positive">READY TO TEST</span>':'<span class="gold">WAITING FOR LIVE DATA</span>';
