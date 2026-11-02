@@ -91,7 +91,24 @@ function renderCryptoDiagnostics(){
       'SHADOW ONLY does not veto PAPER orders')+
   row('HIGH VOL positive history required',d.high_vol_positive_edge_required?'YES':'NO',
       'An UNPROVEN high-volatility setup may remain research-only')+
-  row('Latest execution blocker',escape(d.last_block_category||'NONE'))+
+  row('Last VERIFIED execution veto',escape(d.last_block_category||'NONE'),
+      d.last_real_gate_cycle===null?'No order veto recorded since server start':
+      'Recorded at candle cycle '+String(d.last_real_gate_cycle))+
+  row('Latest candidate to order result',escape(d.last_order_path?.outcome||'NO NEW CANDLE'),
+      'Trade-ready in Market Selector alone does NOT mean a new order attempt')+
+  row('Fresh selected BUY/SELL this cycle',
+      escape((d.last_order_path?.fresh_selected_buy_sell||[]).join(', ')||'None'),
+      'Only new closed-candle signals may enter PAPER')+
+  '<p class="muted">Latest selected BUY/SELL market details</p>'+
+  (d.last_order_path?.selected_buy_sell||[]).map(m=>
+      row(escape(m.symbol+' · '+m.side),escape(m.regime||'—')+
+          ' · score '+num(m.score,1)+' · confidence '+num(m.confidence,1),
+          'Decision candle '+escape(m.candle_timestamp||'—'))).join('')+
+  '<p class="muted">Real admission outcomes since server start</p>'+
+  (count(d.order_path_counts)||'<p class="muted">No new closed-candle admissions counted.</p>')+
+  '<p class="muted">Latest actual order veto reasons</p>'+
+  (count(d.last_order_path?.real_execution_rejections)||
+      '<p class="muted">None on the last evaluated candle.</p>')+
   '<p class="muted">Current market decisions</p>'+count(d.actions_current)+
   '<p class="muted">Decisions counted since server start</p>'+count(d.actions_since_start)+
   '<p class="muted">Order rejections counted since server start</p>'+
