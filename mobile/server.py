@@ -104,6 +104,65 @@ class MobileTradingEngine(TradingEngine):
     """Restored pre-IG mobile PAPER motor with a hard CRYPTO-only entry gate."""
     entry_asset_scope = "MULTI_MARKET"
 
+    def scan(self):
+        """Observe real new-candle admission after the UNMODIFIED parent scan.
+
+        A 'trade-ready' selector row alone is not an order attempt: the
+        Champion may have given that signal on a previous closed candle.
+        Distinguish new selected BUY/SELL, risk veto, and a successful entry.
+        """
+        before_cycle = self.decision_cycle_count
+        before_candles = dict(self.last_candle_ts)
+        before_positions = {p.id for p in self.positions}
+        super().scan()
+        if not self.enabled or self.decision_cycle_count == before_cycle:
+            return
+        fresh_symbols = {
+            symbol for symbol, ts in self.last_candle_ts.items()
+            if before_candles.get(symbol) != ts
+        }
+        selected = set(self.selector.shortlist)
+        ready = [sym for sym in selected if self.decisions.get(sym)
+                 and self.decisions[sym].action in ("BUY", "SELL")]
+        fresh_ready = [sym for sym in ready if sym in fresh_symbols]
+        opened = [p.symbol for p in self.positions if p.id not in before_positions]
+        rejects = {}
+        for reason, count in self.last_gate_reasons.items():
+            root = str(reason).split(" · ", 1)[0][:100]
+            rejects[root] = rejects.get(root, 0) + int(count)
+        # Never assert that 'SESSION' is a gate merely because a last_status
+        # message includes "paper session".
+        if opened:
+            outcome = "POSITION_OPENED"
+        elif rejects:
+            outcome = "EXECUTION_REJECTED"
+        elif fresh_ready and not self.enabled:
+            outcome = "AI_PAUSED"
+        elif fresh_ready:
+            outcome = "FRESH_SIGNAL_WITHOUT_RECORDED_GATE"
+        elif ready:
+            outcome = "SELECTED_SIGNAL_FROM_PRIOR_CANDLE"
+        else:
+            outcome = "NO_SELECTED_BUY_SELL"
+        self.mobile_order_audit = {
+            "cycle": self.decision_cycle_count,
+            "fresh_candle_symbols": sorted(fresh_symbols),
+            "selected_buy_sell": [
+                {"symbol": sym,
+                 "side": self.decisions[sym].action,
+                 "regime": str(self.regimes.get(sym, "UNKNOWN")),
+                 "score": float(self.decisions[sym].score),
+                 "confidence": float(self.decisions[sym].confidence),
+                 "candle_timestamp": str(self.decisions[sym].timestamp)}
+                for sym in sorted(ready)
+            ],
+            "fresh_selected_buy_sell": sorted(fresh_ready),
+            "recent_opened_symbols": opened,
+            "real_execution_rejections": rejects,
+            "outcome": outcome,
+            "engine_status": str(self.last_status)[:220],
+        }
+
     def _open(self, d, s):
         if instrument_meta(s.symbol).get("asset_class") != "CRYPTO":
             self.last_open_block_reason = "CRYPTO ONLY rollback: non-crypto PAPER entries disabled."
@@ -220,6 +279,10 @@ class MobileRuntime:
         self._diag_actions = Counter()
         self._diag_gates = Counter()
         self._diag_last_snapshot = {}
+        self._diag_last_real_gate = "NONE"
+        self._diag_last_gate_cycle = None
+        self._diag_order_outcomes = Counter()
+        self._diag_last_audit_cycle = self.engine.decision_cycle_count
         self.started_at = utcnow()
         self.worker = None
         self.watchdog = None
@@ -318,8 +381,17 @@ class MobileRuntime:
         if e.enabled and e.decision_cycle_count != self._diag_last_cycle:
             for d in e.decisions.values():
                 self._diag_actions[str(d.action)] += 1
+            # Preserve the actual source and cycle of a real veto. 'last_status'
+            # is not a reliable veto source and may mention a PAPER session.
+            audit = getattr(e, "mobile_order_audit", {}) or {}
+            if audit and audit.get("cycle") != self._diag_last_audit_cycle:
+                self._diag_order_outcomes[audit.get("outcome", "UNKNOWN")] += 1
+                self._diag_last_audit_cycle = audit["cycle"]
             for raw_reason, count in e.last_gate_reasons.items():
-                self._diag_gates[self._rejection_category(raw_reason)] += int(count)
+                category=self._rejection_category(raw_reason)
+                self._diag_gates[category] += int(count)
+                self._diag_last_real_gate = category
+                self._diag_last_gate_cycle = e.decision_cycle_count
             self._diag_last_cycle = e.decision_cycle_count
         now = time.monotonic()
         if not self._diag_last_snapshot or now-self._diag_last_log >= 120:
@@ -329,13 +401,15 @@ class MobileRuntime:
             logging.warning(
                 "CRYPTO_PAPER_DIAG active=%s scope=%s fresh=%s "
                 "candles=%s selection=%r actions=%r gates=%r "
-                "shadow_rsi=%s high_vol_positive_only=%s last_gate=%s",
+                "shadow_rsi=%s high_vol_positive_only=%s last_gate=%s "
+                "order_path=%r funnel=%r",
                 d["active"],d["readiness_scope"],d["fresh_crypto"],
                 d["decision_cycles"],d["selection"],
                 d["actions_since_start"],d["order_gate_totals"],
                 d["adaptive_rsi_mode"],
                 d["high_vol_positive_edge_required"],
                 d["last_block_category"],
+                d["last_order_path"],d["order_path_counts"],
             )
 
     def _crypto_diagnostics(self):
@@ -362,8 +436,12 @@ class MobileRuntime:
             "actions_since_start":dict(self._diag_actions),
             "order_gate_totals":dict(self._diag_gates),
             "last_order_gate":dict(last_gates),
-            "last_block_category":self._rejection_category(
-                getattr(e,"last_open_block_reason","") or e.last_status),
+            # Only a recorded REJECTION is a true blocker; a stale status
+            # like 'AI started · new paper session' is NOT a session veto.
+            "last_block_category":self._diag_last_real_gate,
+            "last_real_gate_cycle":self._diag_last_gate_cycle,
+            "last_order_path":getattr(e,"mobile_order_audit",{}) or {},
+            "order_path_counts":dict(self._diag_order_outcomes),
             "adaptive_rsi_mode":("SHADOW ONLY" if
                 self.cfg.get("adaptive_rsi_shadow_only",False) and
                 not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
