@@ -6,6 +6,7 @@ Production requires FX_MOBILE_TOKEN (>=16 chars), HTTPS and a single worker.
 from __future__ import annotations
 
 import dataclasses
+from collections import Counter
 import hmac
 import json
 import logging
@@ -162,6 +163,12 @@ class MobileRuntime:
             allow_new_york_session=True, allow_overlap_session=True,
             allow_rollover_session=True,
         )
+        if self.cfg.get("adaptive_rsi_shadow_only", False):
+            # The original config simultaneously set Shadow-only=True AND
+            # adaptive_rsi_execution_gate_enabled=True. A research-only RSI
+            # should not be permitted to veto a Champion PAPER order.
+            # Do not modify common PC config or any other trading gate.
+            self.cfg["adaptive_rsi_execution_gate_enabled"] = False
         # Previous user settings are kept on disk, but cannot silently
         # reintroduce non-crypto markets during this temporary rollback.
         self.cfg["manual_selected_symbols"] = []
@@ -206,6 +213,13 @@ class MobileRuntime:
         self.last_scan_error = None
         self.last_scan_completed_at = None
         self._last_feed_warning = 0.0
+        # Volatile, observational telemetry only: never stored in checkpoint,
+        # never read by selector, Champion, risk or execution.
+        self._diag_last_log = 0.0
+        self._diag_last_cycle = self.engine.decision_cycle_count
+        self._diag_actions = Counter()
+        self._diag_gates = Counter()
+        self._diag_last_snapshot = {}
         self.started_at = utcnow()
         self.worker = None
         self.watchdog = None
@@ -259,6 +273,7 @@ class MobileRuntime:
                     self.last_scan_at = utcnow()
                     self.last_scan_completed_at = time.monotonic()
                     self.last_scan_error = None
+                    self._record_crypto_diagnostics()
                     if not self.engine.snapshots and time.monotonic() - self._last_feed_warning >= 60:
                         self._last_feed_warning = time.monotonic()
                         feed_errors = getattr(self.feed, '_last_error', {})
@@ -272,6 +287,91 @@ class MobileRuntime:
             delay = (self.cfg.get("scan_interval_seconds", 2) if self.engine.enabled
                      else self.cfg.get("paused_scan_interval_seconds", 4))
             self.shutdown.wait(max(0.2, float(delay) - (time.monotonic() - begin)))
+
+    @staticmethod
+    def _rejection_category(reason):
+        # Stable categories without sensitive API credentials or high-cardinality
+        # numeric values. Research observations do not bypass these gates.
+        r = str(reason or "").upper()
+        for token, category in (
+            ("HIGH_VOL_RESEARCH_ONLY","HIGH_VOL_HISTORY"),
+            ("HIGH VOL QUALITY GATE","HIGH_VOL_QUALITY"),
+            ("ADAPTIVE RSI GATE","ADAPTIVE_RSI"),
+            ("RSI/PRICE GATE","RSI_PRICE"),
+            ("GOVERNOR RESEARCH-ONLY","LEARNING_GOVERNOR"),
+            ("EVIDENCE QUALITY","EVIDENCE_QUALITY"),
+            ("SESSION", "SESSION"),
+            ("LATE_ENTRY","LATE_ENTRY"),
+            ("POOR_LOCATION","POOR_LOCATION"),
+            ("CONTEXT_HEALTH","CONTEXT_HEALTH"),
+            ("CONTEXT_CIRCUIT","CONTEXT_CIRCUIT"),
+            ("COST", "EXECUTION_COST"),
+            ("RISK","RISK"),
+        ):
+            if token in r:
+                return category
+        return "OTHER"
+
+    def _record_crypto_diagnostics(self):
+        """Observe ONE actual closed-candle evaluation, never force a trade."""
+        e = self.engine
+        if e.enabled and e.decision_cycle_count != self._diag_last_cycle:
+            for d in e.decisions.values():
+                self._diag_actions[str(d.action)] += 1
+            for raw_reason, count in e.last_gate_reasons.items():
+                self._diag_gates[self._rejection_category(raw_reason)] += int(count)
+            self._diag_last_cycle = e.decision_cycle_count
+        now = time.monotonic()
+        if not self._diag_last_snapshot or now-self._diag_last_log >= 120:
+            self._diag_last_log = now
+            self._diag_last_snapshot = self._crypto_diagnostics()
+            d = self._diag_last_snapshot
+            logging.warning(
+                "CRYPTO_PAPER_DIAG active=%s scope=%s fresh=%s "
+                "candles=%s selection=%r actions=%r gates=%r "
+                "shadow_rsi=%s high_vol_positive_only=%s last_gate=%s",
+                d["active"],d["readiness_scope"],d["fresh_crypto"],
+                d["decision_cycles"],d["selection"],
+                d["actions_since_start"],d["order_gate_totals"],
+                d["adaptive_rsi_mode"],
+                d["high_vol_positive_edge_required"],
+                d["last_block_category"],
+            )
+
+    def _crypto_diagnostics(self):
+        e=self.engine
+        readiness=self.trading_readiness()
+        actions=Counter(str(d.action) for d in e.decisions.values())
+        feed_states=Counter(str(getattr(s,"feed_status","UNKNOWN"))
+                            for s in e.snapshots.values())
+        last_gates=Counter()
+        for reason,count in e.last_gate_reasons.items():
+            last_gates[self._rejection_category(reason)] += int(count)
+        # Never include account identifiers, secrets or dollar amounts in
+        # these diagnostics. They are a summary of PUBLIC market decisions.
+        return {
+            "active": bool(e.enabled),
+            "readiness_scope": readiness.get("scope","BLOCKED"),
+            "readiness_reason": readiness.get("reason",""),
+            "fresh_crypto": int(readiness.get("fresh_crypto",0)),
+            "decision_cycles": int(e.decision_cycle_count),
+            "selection": {key:int(e.selector.stats.get(key,0))
+                          for key in ("scanned","eligible","selected","trade_ready")},
+            "actions_current":dict(actions),
+            "feed_status":dict(feed_states),
+            "actions_since_start":dict(self._diag_actions),
+            "order_gate_totals":dict(self._diag_gates),
+            "last_order_gate":dict(last_gates),
+            "last_block_category":self._rejection_category(
+                e.last_open_block_reason or e.last_status),
+            "adaptive_rsi_mode":("SHADOW ONLY" if
+                self.cfg.get("adaptive_rsi_shadow_only",False) and
+                not self.cfg.get("adaptive_rsi_execution_gate_enabled",False)
+                else "EXECUTION GATE"),
+            "high_vol_positive_edge_required":bool(
+                self.cfg.get("high_vol_require_positive_edge",True)),
+            "market_data_mode":str(self.cfg.get("market_data_mode","LIVE")),
+        }
 
     def _persist_checkpoint(self):
         if self.checkpoint and self.persistence_error:
@@ -483,6 +583,7 @@ class MobileRuntime:
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
                 "market_data_mode": self.cfg.get("market_data_mode", "LIVE"),
                 "feed_diagnostics": self._feed_probe(),
+                "crypto_diagnostics": self._crypto_diagnostics(),
                 "balance": e.balance, "equity": e.equity, "unrealized": e.unrealized_pnl(),
                 "realized": e.balance - self.session_start_capital,
                 "performance": e.performance(), "lifetime": self.db.lifetime_trade_summary(),
