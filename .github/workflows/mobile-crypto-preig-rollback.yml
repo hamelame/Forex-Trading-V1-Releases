@@ -5,6 +5,7 @@ on:
     branches:
       - mobile-crypto-only-no-ig-rollback-20261027
       - mobile-crypto-shadow-diagnostics-20261102
+      - mobile-crypto-order-path-audit-20261102
   workflow_dispatch:
 
 jobs:
@@ -22,6 +23,8 @@ jobs:
         run: python -m unittest discover -s mobile/tests -p 'test_crypto_preig_rollback.py' -v
       - name: Verify Shadow RSI and read-only crypto diagnostic counters
         run: python -m unittest discover -s mobile/tests -p 'test_crypto_shadow_diagnostics.py' -v
+      - name: Verify true selected BUY/SELL new-candle admission and accurate blocker
+        run: python -m unittest discover -s mobile/tests -p 'test_crypto_order_path_audit.py' -v
       - name: Verify durable disk storage
         run: python -m unittest discover -s mobile/tests -p 'test_durable_storage.py' -v
       - name: Verify post-fork worker initialization
