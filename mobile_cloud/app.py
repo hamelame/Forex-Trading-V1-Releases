@@ -51,8 +51,9 @@ STORAGE_PERSISTENT = configure_mobile_storage()
 # Gunicorn may import this module in its parent/preload process. NEVER
 # create MobileRuntime on import: its scanner + provider threads would then
 # disappear after fork, leaving the engine lock apparently held forever.
-# Resolve the runtime only from the serving worker, on its first authorized
-# API request. Keep process identity to defend against alternate preloaders.
+# Resolve the runtime ONLY inside the serving worker (from its health/HEAD
+# probe or first authorized API request). No threads on module import/fork.
+# Keep process identity to defend against alternate preloaders.
 runtime = None
 runtime_pid = None
 runtime_init_lock = threading.Lock()
@@ -98,6 +99,15 @@ def headers(resp):
 
 @app.route("/health")
 def health():
+    # Health probes are served by Gunicorn's WORKER (after fork), never by
+    # the preloader. Ensure saved PAPER AUTO-RESUME does not depend on a phone
+    # being logged in after Render restarts the web service. This creates
+    # strictly one local synthetic/PAPER engine, no broker connections.
+    try:
+        get_runtime()
+    except Exception:
+        logging.exception("CRYPTO_PAPER_POSTFORK_START_FAILED")
+        return jsonify(ok=False, service="fx-ai-mobile", paper_only=True), 503
     return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True, crypto_only=True, ig_integration=False, rollback="pre-ig-20261027")
 
 
@@ -161,6 +171,15 @@ def command(name):
 
 @app.route("/")
 def index():
+    # Render's deploy readiness probe is HEAD /. Trigger initialization only
+    # in this worker, AFTER fork, not at WSGI module-import time. Ordinary GET
+    # remains a static browser response and cannot expose account state.
+    if request.method == "HEAD":
+        try:
+            get_runtime()
+        except Exception:
+            logging.exception("CRYPTO_PAPER_POSTFORK_START_FAILED")
+            return jsonify(error="PAPER worker initialization unavailable"), 503
     return send_from_directory(WEB, "index.html")
 
 
