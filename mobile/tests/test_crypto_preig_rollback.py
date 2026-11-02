@@ -226,7 +226,11 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
             paths={rule.rule for rule in cloud.app.url_map.iter_rules()}
             self.assertFalse(any(p.startswith("/api/ig") for p in paths))
             self.assertNotIn("ig_auto_worker",vars(cloud))
-            with cloud.app.test_client() as client:
+            # /health now starts the AFTER-FORK PAPER runtime in production.
+            # Use a fake instance here; this unit test must never start a LIVE
+            # provider thread or modify the global on-disk PAPER database.
+            with patch.object(cloud,"get_runtime",return_value=object()):
+              with cloud.app.test_client() as client:
                 status=client.get("/health")
                 self.assertEqual(status.status_code,200)
                 data=status.get_json()
