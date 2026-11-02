@@ -6,6 +6,7 @@ on:
       - mobile-crypto-only-no-ig-rollback-20261027
       - mobile-crypto-shadow-diagnostics-20261102
       - mobile-crypto-order-path-audit-20261102
+      - mobile-crypto-postfork-autostart-20261102
   workflow_dispatch:
 
 jobs:
