@@ -82,7 +82,10 @@ function renderCryptoDiagnostics(){
  e.innerHTML=
   row('AI engine',d.active?'AI ACTIVE':'AI PAUSED','PAPER only · no IG')+
   row('Market readiness',escape(d.readiness_scope||'—'),escape(d.readiness_reason||''))+
-  row('Fresh crypto markets',String(d.fresh_crypto??0),'LIVE candles, not synthetic')+
+  row('Strategy account',escape(d.paper_strategy_profile||'PAPER'),
+      'Fresh learning ledger; old history kept separately; no IG broker')+
+  row('Fresh crypto markets',String(d.fresh_crypto??0),'Crypto: 24/7 if exchange feed is live')+
+  row('Verified non-crypto feeds',String(d.fresh_non_crypto??0),'FX / gold / silver / oil: <=180s old, valid session required')+
   row('Completed decision cycles',String(d.decision_cycles??0),'Closed candle cycles since PAPER checkpoint')+
   row('Eligible / selected / ready',[
        d.selection?.eligible??0,d.selection?.selected??0,d.selection?.trade_ready??0
@@ -90,7 +93,7 @@ function renderCryptoDiagnostics(){
   row('Adaptive RSI',escape(d.adaptive_rsi_mode||'—'),
       'SHADOW ONLY does not veto PAPER orders')+
   row('HIGH VOL positive history required',d.high_vol_positive_edge_required?'YES':'NO',
-      'An UNPROVEN high-volatility setup may remain research-only')+
+      'Fresh PAPER bootstrap: strong high-volatility entries may collect initial outcomes')+
   row('Last VERIFIED execution veto',escape(d.last_block_category||'NONE'),
       d.last_real_gate_cycle===null?'No order veto recorded since server start':
       'Recorded at candle cycle '+String(d.last_real_gate_cycle))+
