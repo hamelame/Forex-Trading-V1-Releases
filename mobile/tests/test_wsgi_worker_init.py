@@ -45,7 +45,8 @@ class WSGIPostForkTests(unittest.TestCase):
                 self.assertEqual(head.data,b'')
                 health=client.get('/health')
                 self.assertEqual(health.status_code,200)
-                self.assertTrue(health.get_json()['crypto_only'])
+                self.assertFalse(health.get_json()['crypto_only'])
+                self.assertTrue(health.get_json()['multi_market_paper'])
                 # A fresh login reuses that same runtime, NEVER restarting a
                 # PAPER session or resetting balance/checkpoint.
                 response=client.get('/api/state',
