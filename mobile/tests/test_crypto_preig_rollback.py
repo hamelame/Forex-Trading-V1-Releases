@@ -1,4 +1,4 @@
-"""CRYPTO ONLY rollback smoke & durable-regression tests.
+"""Fresh multi-market PAPER smoke and durable-regression tests.
 
 Uses a pre-IG WSGI bridge and the reliable Oct 10 mobile crypto provider.
 Absolutely no broker connections or network requests.
@@ -19,7 +19,9 @@ from forex_app.models import Decision, Position
 from mobile.server import MobileRuntime
 
 CRYPTO = ["BTCUSD","ETHUSD","SOLUSD","XRPUSD","LINKUSD","ADAUSD","LTCUSD","AVAXUSD"]
-FOREX = ["EURUSD","GBPUSD","XAUUSD"]
+FOREX = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD"]
+METALS_ENERGY = ["XAUUSD","XAGUSD","WTIUSD","BRENTUSD"]
+ASSETS = CRYPTO + FOREX + METALS_ENERGY
 
 
 class CryptoPreIGRollbackTests(unittest.TestCase):
@@ -28,7 +30,7 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
         self.dir = Path(self.temp.name)
         self.cfg_path = self.dir / "cfg.json"
         self.base={
-            "symbols":FOREX+CRYPTO,
+            "symbols":ASSETS,
             "market_data_mode":"LIVE",
             "starting_balance":20000.0,
             "paper_trading_capital":20000.0,
@@ -63,24 +65,30 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
             return MobileRuntime(config_path=self.cfg_path,
                       db_path=path,feed=feed,start_worker=False)
 
-    def test_only_supported_crypto_are_in_universe_auto_top5(self):
+    def test_selected_crypto_forex_metals_energy_and_bounded_paper_risk(self):
         r=self.make_runtime()
         try:
-            self.assertEqual(r.cfg["symbols"],CRYPTO)
-            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO"])
-            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 5")
-            self.assertEqual(r.cfg["market_scan_top_n"],5)
+            self.assertEqual(r.cfg["symbols"],ASSETS)
+            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO","FOREX","METALS","ENERGY"])
+            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 10")
+            self.assertEqual(r.cfg["market_scan_top_n"],10)
+            self.assertFalse(r.cfg["high_vol_require_positive_edge"])
+            self.assertEqual(r.cfg["high_vol_min_signal_score"],74)
+            self.assertEqual(r.cfg["high_vol_min_confidence"],68)
+            self.assertAlmostEqual(r.cfg["risk_per_trade_pct"],0.10)
+            self.assertAlmostEqual(r.cfg["max_total_risk_pct"],0.50)
+            self.assertEqual(r.cfg["max_open_positions"],3)
             self.assertEqual(r.cfg["selected_chart_symbol"],"BTCUSD")
             self.assertEqual(r.cfg["broker"],"synthetic")
             self.assertEqual(r.cfg["mode"],"PAPER")
             self.assertEqual(r.cfg["manual_selected_symbols"],[])
-            self.assertEqual(r.full_symbol_count,len(FOREX+CRYPTO))
+            self.assertEqual(r.full_symbol_count,len(ASSETS))
             self.assertEqual(json.loads(self.cfg_path.read_text()),self.base)
             self.assertEqual(r.db.lifetime_trade_summary()["trades"],0)
         finally:
             r.close()
 
-    def test_saved_manual_forex_watchlist_cannot_reenable_fx(self):
+    def test_saved_manual_selection_cannot_override_auto_top10(self):
         saved=self.dir / "settings.json"
         saved.write_text(json.dumps({
             "selection_mode":"MANUAL",
@@ -89,24 +97,34 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
         }))
         r=self.make_runtime()
         try:
-            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 5")
-            self.assertEqual(r.cfg["selected_chart_symbol"],"BTCUSD")
+            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 10")
+            self.assertEqual(r.cfg["selected_chart_symbol"],"EURUSD")
             self.assertEqual(r.cfg["manual_selected_symbols"],[])
             self.assertEqual(json.loads(saved.read_text())["manual_selected_symbols"],
                              ["EURUSD","GBPUSD"])
         finally:
             r.close()
 
-    def test_rejects_fx_orders_even_when_scope_or_selector_says_ready(self):
+    def test_noncrypto_freshness_and_market_weekend_block_before_parent_order(self):
         r=self.make_runtime()
         try:
             fx=r.feed.snapshot("EURUSD")
-            d=Decision("EURUSD","BUY",90,91,"test",8,15,fx.timestamp)
+            now=datetime.now(timezone.utc).isoformat()
+            fresh=replace(fx,timestamp=now,feed_status="LIVE",data_age_seconds=10.0)
+            old=replace(fresh,data_age_seconds=900.0)
+            d=Decision("EURUSD","BUY",90,91,"test",8,15,now)
             r.engine.entry_asset_scope="MULTI_MARKET"
-            with patch.object(TradingEngine,"_open",autospec=True) as parent:
-                r.engine._open(d,fx)
+            with patch("mobile.server._non_crypto_session_open",return_value=True), \
+                 patch.object(TradingEngine,"_open",autospec=True) as parent:
+                r.engine._open(d,old)
                 parent.assert_not_called()
-            self.assertIn("CRYPTO ONLY",r.engine.last_open_block_reason)
+                self.assertIn("STALE",r.engine.last_open_block_reason)
+                r.engine._open(d,fresh)
+                parent.assert_called_once()
+            r.engine.entry_asset_scope="CRYPTO_ONLY"
+            with patch.object(TradingEngine,"_open",autospec=True) as parent:
+                r.engine._open(d,fresh)
+                parent.assert_not_called()
             self.assertEqual(r.engine.positions,[])
         finally:
             r.close()
@@ -158,16 +176,16 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
             self.assertIsNone(restored.persistence_error)
             self.assertAlmostEqual(restored.engine.balance,19986.86,2)
             self.assertEqual(restored.db.lifetime_trade_summary()["trades"],126)
-            self.assertEqual(restored.cfg["symbols"],CRYPTO)
+            self.assertEqual(restored.cfg["symbols"],ASSETS)
             self.assertEqual(restored.engine.positions,[])
         finally:
             restored.close()
 
-    def test_forex_position_in_durable_checkpoint_fails_closed_not_erased(self):
+    def test_unsupported_prior_position_in_checkpoint_fails_closed_not_erased(self):
         from forex_app.models import Position
         r=self.make_runtime(durable=True)
         try:
-            p=Position("oldfx","EURUSD","BUY",0.01,1.12,1.11,
+            p=Position("oldfx","US500","BUY",0.01,1.12,1.11,
                        1.14,15.0,datetime.now(timezone.utc).isoformat())
             r.engine.positions=[p]
             r.db.save_positions([p])
@@ -195,13 +213,13 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
                     self.assertEqual(policy["code"],"CRYPTO_24_7")
             self.assertTrue(r.cfg["allow_rollover_session"])
             self.assertTrue(r.cfg["context_crypto_24_7"])
-            self.assertEqual(r.cfg["symbols"],CRYPTO)
+            self.assertEqual(r.cfg["symbols"],ASSETS)
             self.assertNotIn("allow_rollover_session",self.base,
                              "Shared PC config must never be rewritten")
         finally:
             r.close()
 
-    def test_settings_save_cannot_disable_crypto_rollover_or_auto_top5(self):
+    def test_settings_save_preserves_multimarket_policy_and_crypto_rollover(self):
         r=self.make_runtime()
         try:
             result=r.command("settings",{"values":{
@@ -209,10 +227,10 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
                 "selection_mode":"MANUAL",
                 "market_scan_top_n":15}})
             self.assertIn("saved",result["message"].lower())
-            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 5")
-            self.assertEqual(r.cfg["market_scan_top_n"],5)
+            self.assertEqual(r.cfg["selection_mode"],"AUTO TOP 10")
+            self.assertEqual(r.cfg["market_scan_top_n"],10)
             self.assertTrue(r.cfg["allow_rollover_session"])
-            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO"])
+            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO","FOREX","METALS","ENERGY"])
             from forex_app.context_edge import session_policy
             self.assertTrue(session_policy("ETHUSD","Rollover / Thin",r.cfg)["allowed"])
             self.assertEqual(json.loads(self.cfg_path.read_text()),self.base)
@@ -235,7 +253,8 @@ class CryptoPreIGRollbackTests(unittest.TestCase):
                 self.assertEqual(status.status_code,200)
                 data=status.get_json()
                 self.assertTrue(data["paper_only"])
-                self.assertTrue(data["crypto_only"])
+                self.assertFalse(data["crypto_only"])
+                self.assertTrue(data["multi_market_paper"])
                 self.assertFalse(data["ig_integration"])
                 self.assertIn(client.post("/api/ig-demo/auto/start").status_code,(404,405))
                 self.assertIn(client.post("/api/ig-demo/trial/open").status_code,(404,405))
