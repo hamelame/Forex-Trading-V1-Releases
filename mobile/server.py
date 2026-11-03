@@ -101,7 +101,7 @@ def valid_setting(key, value):
 
 
 class MobileTradingEngine(TradingEngine):
-    """Restored pre-IG mobile PAPER motor with a hard CRYPTO-only entry gate."""
+    """Fresh multi-asset PAPER; live-priced crypto 24/7, non-crypto in session."""
     entry_asset_scope = "MULTI_MARKET"
 
     def scan(self):
@@ -164,13 +164,35 @@ class MobileTradingEngine(TradingEngine):
         }
 
     def _open(self, d, s):
-        if instrument_meta(s.symbol).get("asset_class") != "CRYPTO":
-            self.last_open_block_reason = "CRYPTO ONLY rollback: non-crypto PAPER entries disabled."
+        # This mobile installation remains PAPER ONLY. Never allow synthetic
+        # prices, unverified futures delay, a closed weekend or an unrelated
+        # fresh crypto candle to authorize an FX/metal/energy position.
+        asset = instrument_meta(s.symbol).get("asset_class")
+        if self.entry_asset_scope not in ("CRYPTO_ONLY", "MULTI_MARKET"):
+            self.last_open_block_reason = "PAPER feed not ready: no verified LIVE market."
             return
-        if self.entry_asset_scope not in ("CRYPTO_ONLY","MULTI_MARKET","SYNTHETIC"):
-            self.last_open_block_reason = "CRYPTO ONLY: waiting for fresh LIVE market data."
+        if asset not in ("CRYPTO", "FOREX", "METALS", "ENERGY"):
+            self.last_open_block_reason = "Unsupported mobile PAPER asset class."
             return
-        return super()._open(d,s)
+        if asset != "CRYPTO":
+            if self.entry_asset_scope != "MULTI_MARKET" or not _non_crypto_session_open():
+                self.last_open_block_reason = "NONCRYPTO_SESSION_OR_FEED_BLOCKED"
+                return
+            age = float(getattr(s, "data_age_seconds", float("inf")))
+            stamp = getattr(s, "timestamp", None)
+            try:
+                signal_time = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                live_age = (datetime.now(timezone.utc) - signal_time).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                live_age = float("inf")
+            max_age = float(self.cfg.get("mobile_noncrypto_max_entry_age_seconds", 180))
+            if (getattr(s, "feed_status", "") != "LIVE"
+                    or not math.isfinite(age) or age < 0 or age > max_age
+                    or not math.isfinite(live_age) or live_age < -90
+                    or live_age > max_age):
+                self.last_open_block_reason = "NONCRYPTO_STALE_OR_DELAYED_PUBLIC_FEED"
+                return
+        return super()._open(d, s)
 
 
 class MobileRuntime:
@@ -181,20 +203,23 @@ class MobileRuntime:
         self.shutdown = threading.Event()
         self.config_path = Path(config_path or os.getenv("FX_MOBILE_CONFIG", str(ROOT / "config.json")))
         self.cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
-        # Mobile-only staged PAPER test universe: bounded startup work on the
-        # free Render instance. Never rewrite the PC config or strategy.
+        # Fresh PAPER learning starts on a SEPARATE persistent SQLite ledger,
+        # configured by FX_MOBILE_DB on Render. The old 126-trade database remains
+        # untouched for reference and cannot poison the fresh strategy.
+        # Keep one bounded universe: 8 liquid cryptos, 5 FX majors and 4
+        # metals/energy symbols. All non-crypto quotes require LIVE freshness.
         self.full_symbol_count = len(self.cfg["symbols"])
-        # Restore stable 10 October LIVE crypto feed (no IG), but lock this
-        # mobile service to crypto regardless of an older saved watchlist or
-        # FX_MOBILE_TEST_FULL_UNIVERSE environment setting. No PC config writes.
         test_symbols = (
             "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
             "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
+            "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+            "XAUUSD", "XAGUSD", "WTIUSD", "BRENTUSD",
         )
         self.staged_paper_test = True
         self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]
-        if not self.cfg["symbols"] or "BTCUSD" not in self.cfg["symbols"] or "ETHUSD" not in self.cfg["symbols"]:
-            raise RuntimeError("CRYPTO ONLY rollback requires BTCUSD and ETHUSD in configured universe")
+        required = {"BTCUSD", "ETHUSD", "EURUSD", "XAUUSD", "XAGUSD", "WTIUSD"}
+        if not required.issubset(self.cfg["symbols"]):
+            raise RuntimeError("Fresh mobile multi-market PAPER universe is incomplete")
         # Restore only previously validated mutable user controls, not strategy internals.
         self.settings_path = Path(os.getenv("FX_MOBILE_SETTINGS", str(ROOT / "data" / "mobile_settings.json")))
         if self.settings_path.is_file():
@@ -210,33 +235,53 @@ class MobileRuntime:
                         self.cfg[key] = list(dict.fromkeys(value))[:25]
             except (ValueError, OSError, TypeError) as exc:
                 logging.warning("Ignoring unreadable mobile settings: %s", exc)
+        # The new PAPER database has no historical positive edge. Requiring
+        # POSITIVE from trade zero permanently prohibits HIGH VOL learning.
+        # Permit strong HIGH VOL setups with tighter sizing; the other RSI,
+        # late-entry, cost, context, loss and equity gates remain active.
         self.cfg.update(
             mode="PAPER", paper_only_build=True, broker="synthetic",
-            neural_edge_shadow_only=True, selection_mode="AUTO TOP 5",
-            market_scan_top_n=5, enabled_asset_classes=["CRYPTO"],
+            neural_edge_shadow_only=True, selection_mode="AUTO TOP 10",
+            market_scan_top_n=10,
+            enabled_asset_classes=["CRYPTO", "FOREX", "METALS", "ENERGY"],
             context_crypto_24_7=True,
-            # Global session switches run BEFORE the crypto-aware context
-            # policy. Rollover=False used to block crypto at 17:00 NY,
-            # despite "24/7" and fresh exchange quotes.
+            context_forex_new_york_enabled=True,
+            high_vol_require_positive_edge=False,
+            high_vol_min_signal_score=74,
+            high_vol_min_confidence=68,
+            forex_probation_enabled=True,
+            forex_probation_min_score=73,
+            forex_probation_min_confidence=66,
+            # Futures quotes from Yahoo can be 10-15 minutes delayed. Such
+            # quotes must NEVER be executable in a minute-candle strategy.
+            mobile_noncrypto_max_entry_age_seconds=180,
             allow_asia_session=True, allow_london_session=True,
             allow_new_york_session=True, allow_overlap_session=True,
             allow_rollover_session=True,
         )
+        self.cfg["risk_per_trade_pct"] = min(
+            float(self.cfg.get("risk_per_trade_pct", 0.4)), 0.10)
+        self.cfg["equity_sizing_max_trade_risk_pct"] = min(
+            float(self.cfg.get("equity_sizing_max_trade_risk_pct", 0.18)), 0.10)
+        self.cfg["max_total_risk_pct"] = min(
+            float(self.cfg.get("max_total_risk_pct", 1.6)), 0.50)
+        self.cfg["max_open_positions"] = min(
+            int(self.cfg.get("max_open_positions", 5)), 3)
         if self.cfg.get("adaptive_rsi_shadow_only", False):
             # The original config simultaneously set Shadow-only=True AND
             # adaptive_rsi_execution_gate_enabled=True. A research-only RSI
             # should not be permitted to veto a Champion PAPER order.
             # Do not modify common PC config or any other trading gate.
             self.cfg["adaptive_rsi_execution_gate_enabled"] = False
-        # Previous user settings are kept on disk, but cannot silently
-        # reintroduce non-crypto markets during this temporary rollback.
+        # A saved old manual list cannot narrow the new clean strategy to
+        # historical forex choices. Other user controls remain in settings.
         self.cfg["manual_selected_symbols"] = []
         if self.cfg.get("selected_chart_symbol") not in self.cfg["symbols"]:
             self.cfg["selected_chart_symbol"] = "BTCUSD"
         logging.warning(
-            "CRYPTO_ONLY_ROLLBACK pre-IG WSGI/PAPER, symbols=%s, "
-            "selection=AUTO TOP 5, broker=synthetic",
-            ",".join(self.cfg["symbols"]),
+            "FRESH_MULTIMARKET_PAPER no IG, symbols=%s, "
+            "selection=AUTO TOP 10, risk_per_trade_pct=%.2f, broker=synthetic",
+            ",".join(self.cfg["symbols"]), self.cfg["risk_per_trade_pct"],
         )
         # The mobile bridge does not modify the trading strategy defaults.
         db_file = Path(db_path or os.getenv("FX_MOBILE_DB", str(ROOT / "data" / "forex_mobile.db")))
@@ -324,9 +369,7 @@ class MobileRuntime:
                     # Every market still refreshes; crypto-only PAPER cannot
                     # open a non-crypto position until full readiness returns.
                     ready = self.trading_readiness()
-                    self.engine.entry_asset_scope = (
-                        "CRYPTO_ONLY" if ready.get("ready") else "BLOCKED"
-                    )
+                    self.engine.entry_asset_scope = ready.get("scope", "BLOCKED")
                     self.engine.scan()
                     if self.auto_resume_pending and self.trading_readiness_after_scan():
                         self.engine.set_enabled(True, reset_on_start=False)
@@ -428,6 +471,9 @@ class MobileRuntime:
             "readiness_scope": readiness.get("scope","BLOCKED"),
             "readiness_reason": readiness.get("reason",""),
             "fresh_crypto": int(readiness.get("fresh_crypto",0)),
+            "fresh_non_crypto": int(readiness.get("fresh_non_crypto",0)),
+            "paper_strategy_profile": "FRESH MULTI-MARKET · NO IG",
+            "new_paper_ledger": True,
             "decision_cycles": int(e.decision_cycle_count),
             "selection": {key:int(e.selector.stats.get(key,0))
                           for key in ("scanned","eligible","selected","trade_ready")},
@@ -535,8 +581,8 @@ class MobileRuntime:
             klass = instrument_meta(symbol).get("asset_class")
             max_age = (
                 float(self.cfg.get("live_data_stale_seconds", 180))
-                if klass in ("FOREX", "CRYPTO")
-                else float(self.cfg.get("live_data_delayed_stale_seconds", 1200))
+                if klass == "CRYPTO" else
+                float(self.cfg.get("mobile_noncrypto_max_entry_age_seconds", 180))
             )
             if age <= max_age:
                 fresh += 1
@@ -552,6 +598,7 @@ class MobileRuntime:
         scope = "MULTI_MARKET" if full else ("CRYPTO_ONLY" if crypto_only else "BLOCKED")
         return {"ready": full or crypto_only, "scope": scope,
                 "fresh": fresh, "fresh_crypto": fresh_crypto,
+                "fresh_non_crypto": fresh_non_crypto,
                 "crypto_symbols": crypto_symbols,
                 "required": 1 if crypto_only else 3,
                 "last_scan_age_seconds": round(elapsed, 1),
@@ -656,6 +703,7 @@ class MobileRuntime:
                                   "error": self.persistence_error},
                 "trading_readiness": self.trading_readiness(),
                 "staged_paper_test": self.staged_paper_test,
+                "paper_strategy_profile": "FRESH MULTI-MARKET PAPER · NO IG",
                 "full_symbol_count": self.full_symbol_count,
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,
@@ -788,12 +836,20 @@ class MobileRuntime:
                 # forex-era manual or rollover setting cannot silently halt
                 # crypto after Settings is saved.
                 self.cfg.update(
-                    selection_mode="AUTO TOP 5",market_scan_top_n=5,
-                    enabled_asset_classes=["CRYPTO"],context_crypto_24_7=True,
+                    selection_mode="AUTO TOP 10",market_scan_top_n=10,
+                    enabled_asset_classes=["CRYPTO", "FOREX", "METALS", "ENERGY"],
+                    context_crypto_24_7=True,
+                    context_forex_new_york_enabled=True,
                     allow_asia_session=True,allow_london_session=True,
                     allow_new_york_session=True,allow_overlap_session=True,
                     allow_rollover_session=True,
                 )
+                self.cfg["risk_per_trade_pct"] = min(
+                    float(self.cfg.get("risk_per_trade_pct", 0.1)), 0.10)
+                self.cfg["max_total_risk_pct"] = min(
+                    float(self.cfg.get("max_total_risk_pct", 0.5)), 0.50)
+                self.cfg["max_open_positions"] = min(
+                    int(self.cfg.get("max_open_positions", 3)), 3)
                 e.apply_config(self.cfg, force_reselect=bool({"selection_mode", "market_scan_top_n"} & set(changes)))
                 self._save_config()
                 return {"message": "Settings saved. Capital applies on next new session."}
