@@ -217,9 +217,9 @@ class MobileRuntime:
         )
         self.staged_paper_test = True
         self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]
-        required = {"BTCUSD", "ETHUSD", "EURUSD", "XAUUSD", "XAGUSD", "WTIUSD"}
+        required = {"BTCUSD", "ETHUSD"}
         if not required.issubset(self.cfg["symbols"]):
-            raise RuntimeError("Fresh mobile multi-market PAPER universe is incomplete")
+            raise RuntimeError("Fresh mobile PAPER baseline requires BTCUSD and ETHUSD")
         # Restore only previously validated mutable user controls, not strategy internals.
         self.settings_path = Path(os.getenv("FX_MOBILE_SETTINGS", str(ROOT / "data" / "mobile_settings.json")))
         if self.settings_path.is_file():
