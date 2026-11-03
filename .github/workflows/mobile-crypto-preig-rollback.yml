@@ -8,6 +8,7 @@ on:
       - mobile-crypto-order-path-audit-20261102
       - mobile-crypto-postfork-autostart-20261102
       - mobile-fresh-multimarket-paper-20261103
+      - mobile-fresh-paper-autostart-once-20261103
   workflow_dispatch:
 
 jobs:
@@ -29,6 +30,8 @@ jobs:
         run: python -m unittest discover -s mobile/tests -p 'test_crypto_order_path_audit.py' -v
       - name: Verify fresh multi-market PAPER, delayed quotes and 126-trade legacy isolation
         run: python -m unittest discover -s mobile/tests -p 'test_fresh_multimarket_paper.py' -v
+      - name: Verify one-time PAPER auto-start respects later Pause
+        run: python -m unittest discover -s mobile/tests -p 'test_fresh_paper_autostart_once.py' -v
       - name: Verify durable disk storage
         run: python -m unittest discover -s mobile/tests -p 'test_durable_storage.py' -v
       - name: Verify post-fork worker initialization
