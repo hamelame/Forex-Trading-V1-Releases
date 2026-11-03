@@ -310,6 +310,34 @@ class MobileRuntime:
                 self.persistence_error = f"Recovery requires review: {str(exc)[:150]}"
                 self.engine.enabled = False
                 logging.exception("PAPER durable account recovery failed; AI remains paused")
+        # ONE-TIME opt-in launch for the new PAPER account the user asked to
+        # restart. This marker is on the mounted disk, NOT in process memory:
+        # later deliberate Pause/Stop survives every server restart. The prior
+        # 126-trade ledger has a different filename and is never auto-started.
+        if (self.checkpoint and self.persistence_error is None
+                and db_file.name == "fx_mobile_fresh_multimarket_20261103.sqlite"):
+            marker = Path(disk) / ".fx_mobile_fresh_multimarket_first_start_20261103"
+            if not marker.exists():
+                try:
+                    if (not self.engine.positions
+                            and int(self.db.lifetime_trade_summary()["trades"]) == 0):
+                        self.auto_resume_pending = True
+                        self.checkpoint.save(self.engine, auto_resume=True)
+                        marker.write_text("one-time PAPER activation authorized 2026-11-03\n",
+                                          encoding="utf-8")
+                        logging.warning(
+                            "FRESH_MULTIMARKET_PAPER_AUTO_START_QUEUED "
+                            "awaiting verified LIVE market data; no IG"
+                        )
+                except Exception as exc:
+                    self.auto_resume_pending = False
+                    self.engine.enabled = False
+                    try:
+                        self.checkpoint.save(self.engine, auto_resume=False)
+                    except Exception:
+                        pass
+                    self.persistence_error = "Fresh PAPER autostart could not be safely recorded"
+                    logging.exception("Fresh PAPER activation safely paused: %s", exc)
         self.session_start_capital = self.engine.risk.session_start_balance
         self._cached_learning = {}
         self._learning_at = 0.0
