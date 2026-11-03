@@ -52,9 +52,9 @@ class CryptoShadowDiagnosticsTests(unittest.TestCase):
             self.assertTrue(r.cfg["adaptive_rsi_shadow_only"])
             self.assertFalse(r.engine.cfg["adaptive_rsi_execution_gate_enabled"])
             self.assertEqual(r._crypto_diagnostics()["adaptive_rsi_mode"],"SHADOW ONLY")
-            self.assertTrue(r.cfg["high_vol_require_positive_edge"],
-                            "Other trading gates must not be relaxed")
-            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO"])
+            self.assertFalse(r.cfg["high_vol_require_positive_edge"],
+                             "Fresh PAPER account must be able to gather initial HIGH VOL evidence")
+            self.assertEqual(r.cfg["enabled_asset_classes"],["CRYPTO","FOREX","METALS","ENERGY"])
             self.assertEqual(json.loads(self.cfg_path.read_text()),self.config,
                              "Shared PC config must remain unchanged")
         finally:
