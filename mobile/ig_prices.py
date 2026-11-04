@@ -116,7 +116,7 @@ class DemoPrices:
             if len(feed.history[symbol]) < 30 and time.monotonic() >= self.seed_attempt.get(symbol, 0):
                 self.seed_attempt[symbol] = time.monotonic() + 1800
                 try:
-                    prices = self.get(f"/prices/{epic}?resolution=MINUTE&max=90", 3)
+                    prices = self.get(f"/prices/{epic}?resolution=MINUTE&max=90&pageSize=90", 3)
                     bars = historical_bars(prices["prices"], now)
                 except (KeyError, TypeError, ValueError, OSError) as exc:
                     logging.warning("IG price history unavailable for %s (%s); collecting quote bars", symbol, type(exc).__name__)
