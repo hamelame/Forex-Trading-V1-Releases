@@ -19,10 +19,10 @@ from forex_app.market import SyntheticFeed
 from forex_app.models import Decision
 from mobile.server import MobileRuntime
 
-COINS=["BTCUSD","ETHUSD","SOLUSD","XRPUSD","LINKUSD","ADAUSD","LTCUSD","AVAXUSD"]
+COINS=["BTCUSD","ETHUSD","SOLUSD","XRPUSD","LINKUSD","ADAUSD","LTCUSD","AVAXUSD","BCHUSD","DOTUSD"]
 FX=["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD"]
-METALS=["XAUUSD","XAGUSD"]
-ENERGY=["WTIUSD","BRENTUSD"]
+METALS=["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]
+ENERGY=["WTIUSD","BRENTUSD","HEATOILUSD","RBOBUSD"]
 SYMBOLS=COINS+FX+METALS+ENERGY
 
 
@@ -99,6 +99,8 @@ class FreshMultiMarketPaperTests(unittest.TestCase):
             self.assertEqual(_yahoo_symbol("XAGUSD"),"SI=F")
             self.assertEqual(_yahoo_symbol("WTIUSD"),"CL=F")
             self.assertEqual(_yahoo_symbol("BRENTUSD"),"BZ=F")
+            self.assertEqual([_yahoo_symbol(s) for s in METALS[2:] + ENERGY[2:]],
+                             ["PL=F", "PA=F", "HO=F", "RB=F"])
         finally:
             r.close()
 

@@ -206,14 +206,15 @@ class MobileRuntime:
         # Fresh PAPER learning starts on a SEPARATE persistent SQLite ledger,
         # configured by FX_MOBILE_DB on Render. The old 126-trade database remains
         # untouched for reference and cannot poison the fresh strategy.
-        # Keep one bounded universe: 8 liquid cryptos, 5 FX majors and 4
+        # Keep one bounded universe: 10 cryptos, 5 FX majors and 8
         # metals/energy symbols. All non-crypto quotes require LIVE freshness.
         self.full_symbol_count = len(self.cfg["symbols"])
         test_symbols = (
             "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
-            "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
+            "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD", "BCHUSD", "DOTUSD",
             "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-            "XAUUSD", "XAGUSD", "WTIUSD", "BRENTUSD",
+            "XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD",
+            "WTIUSD", "BRENTUSD", "HEATOILUSD", "RBOBUSD",
         )
         self.staged_paper_test = True
         self.cfg["symbols"] = [symbol for symbol in test_symbols if symbol in self.cfg["symbols"]]

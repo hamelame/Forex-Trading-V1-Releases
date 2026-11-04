@@ -98,7 +98,7 @@ class MobileWeekendCryptoTests(unittest.TestCase):
         self.assertEqual(result["required"], 3)
 
 
-    def test_eight_approved_crypto_markets_and_twenty_total_are_mobile_only(self):
+    def test_expanded_market_universe_is_mobile_only(self):
         # The shared full PC config is read but never rewritten.
         config_file = Path(__file__).resolve().parents[2] / "config.json"
         before = config_file.read_bytes()
@@ -107,15 +107,16 @@ class MobileWeekendCryptoTests(unittest.TestCase):
                                     feed=SimpleNamespace(), start_worker=False)
             try:
                 self.assertEqual(runtime.full_symbol_count, 140)
-                self.assertEqual(len(runtime.cfg["symbols"]), 20)
+                self.assertEqual(len(runtime.cfg["symbols"]), 23)
                 symbols = runtime.cfg["symbols"]
                 cryptos = [s for s in symbols if s in _KRAKEN_PAIRS]
                 self.assertEqual(cryptos, [
                     "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
-                    "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD",
+                    "LINKUSD", "ADAUSD", "LTCUSD", "AVAXUSD", "BCHUSD", "DOTUSD",
                 ])
-                for old in ("XAUUSD", "XAGUSD", "EURUSD"):
-                    self.assertIn(old, symbols)
+                for symbol in ("XAUUSD", "XAGUSD", "EURUSD", "XPTUSD", "XPDUSD",
+                               "HEATOILUSD", "RBOBUSD"):
+                    self.assertIn(symbol, symbols)
                 for excluded in ("DOGEUSD", "PEPEUSD", "SHIBUSD"):
                     self.assertNotIn(excluded, symbols)
             finally:
@@ -237,7 +238,7 @@ class PublicCryptoFallbackTests(unittest.TestCase):
                 for i in range(count)]
 
 
-    def test_all_eight_have_independent_usd_candle_sources(self):
+    def test_mobile_coins_have_independent_usd_candle_sources(self):
         expected = {
             "BTCUSD": ("XBTUSD", "BTC-USD"),
             "ETHUSD": ("ETHUSD", "ETH-USD"),
@@ -247,6 +248,8 @@ class PublicCryptoFallbackTests(unittest.TestCase):
             "ADAUSD": ("ADAUSD", "ADA-USD"),
             "LTCUSD": ("LTCUSD", "LTC-USD"),
             "AVAXUSD": ("AVAXUSD", "AVAX-USD"),
+            "BCHUSD": ("BCHUSD", "BCH-USD"),
+            "DOTUSD": ("DOTUSD", "DOT-USD"),
         }
         for symbol, (kraken, coinbase) in expected.items():
             with self.subTest(symbol=symbol):

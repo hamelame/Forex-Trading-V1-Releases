@@ -1,7 +1,7 @@
 """Mobile-only 24/7 PAPER crypto candle fallback, no broker orders.
 
 Mobile's small Render instance uses the PC AI strategy unchanged. For a
-bounded liquid-crypto test universe (BTC/ETH/SOL/XRP/LINK/ADA/LTC/AVAX),
+bounded mobile crypto universe,
 the public Kraken and Coinbase candle APIs provide alternative 1m LIVE data if
 Binance/Yahoo are unreachable. This layer NEVER substitutes stale or synthetic
 prices, and it is enabled only on the mobile service.
@@ -22,11 +22,13 @@ _KRAKEN_PAIRS = {
     "BTCUSD": "XBTUSD", "ETHUSD": "ETHUSD", "SOLUSD": "SOLUSD",
     "XRPUSD": "XRPUSD", "LINKUSD": "LINKUSD", "ADAUSD": "ADAUSD",
     "LTCUSD": "LTCUSD", "AVAXUSD": "AVAXUSD",
+    "BCHUSD": "BCHUSD", "DOTUSD": "DOTUSD",
 }
 _COINBASE_PAIRS = {
     "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
     "XRPUSD": "XRP-USD", "LINKUSD": "LINK-USD", "ADAUSD": "ADA-USD",
     "LTCUSD": "LTC-USD", "AVAXUSD": "AVAX-USD",
+    "BCHUSD": "BCH-USD", "DOTUSD": "DOT-USD",
 }
 
 
