@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from forex_app.instruments import instrument_meta
 from forex_app.live_market import LiveMarketFeed
+from mobile.futures_feed import FuturesMinuteFeed
 
 # Mobile-only allowlist. This is intentionally not the 32-coin PC universe:
 # bounded requests keep the Render 512-MB worker responsive.
@@ -83,6 +84,10 @@ def _validated_ohlc(rows, provider, *, source_order):
 class MobileLiveMarketFeed(LiveMarketFeed):
     """Retain original FX/metals/indices logic; mobile liquid-crypto feed only."""
 
+    def __init__(self, symbols, cfg=None):
+        self.futures = FuturesMinuteFeed()
+        super().__init__(symbols, cfg)
+
     def _fetch_kraken(self, symbol):
         pair = _KRAKEN_PAIRS.get(symbol)
         if not pair:
@@ -121,6 +126,16 @@ class MobileLiveMarketFeed(LiveMarketFeed):
         return _validated_ohlc(response, "COINBASE PUBLIC 1M", source_order="coinbase")
 
     def _refresh_symbol(self, symbol, force=False):
+        if symbol in self.futures.contracts:
+            self._last_fetch[symbol] = time.time()
+            bootstrap = not self.history[symbol]
+            try:
+                result = self.futures.fetch(symbol, bootstrap,
+                    self.cfg.get("mobile_noncrypto_max_entry_age_seconds", 180), self.timeout)
+                self._publish_result(symbol, result, bootstrap)
+            except Exception as exc:
+                self._last_error[symbol] = str(exc)[:180]
+            return
         if symbol not in _KRAKEN_PAIRS:
             return super()._refresh_symbol(symbol, force=force)
         now = time.time()
