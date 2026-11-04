@@ -80,7 +80,7 @@ function renderCryptoDiagnostics(){
  if(!e)return;
  const count=o=>Object.entries(o||{}).map(([name,n])=>row(name,String(n))).join('');
  e.innerHTML=
-  row('AI engine',d.active?'AI ACTIVE':'AI PAUSED','PAPER only · no IG')+
+  row('AI engine',d.active?'AI ACTIVE':'AI PAUSED','PAPER only · simulated orders')+
   row('Market readiness',escape(d.readiness_scope||'—'),escape(d.readiness_reason||''))+
   row('Strategy account',escape(d.paper_strategy_profile||'PAPER'),
       'Fresh learning ledger; old history kept separately; no IG broker')+

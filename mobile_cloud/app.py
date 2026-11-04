@@ -108,7 +108,7 @@ def health():
     except Exception:
         logging.exception("CRYPTO_PAPER_POSTFORK_START_FAILED")
         return jsonify(ok=False, service="fx-ai-mobile", paper_only=True), 503
-    return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True, crypto_only=False, multi_market_paper=True, ig_integration=False, strategy_profile="fresh-multimarket-20261103")
+    return jsonify(ok=True, service="fx-ai-mobile", version="2.9.2.6", paper_only=True, crypto_only=False, multi_market_paper=True, ig_integration=False, ig_price_feed="read-only" if "WTIIGUSD" in get_runtime().cfg["symbols"] else "off", strategy_profile="fresh-multimarket-20261103")
 
 
 @app.route("/api/state")

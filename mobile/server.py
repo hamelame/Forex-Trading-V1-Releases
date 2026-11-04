@@ -28,6 +28,7 @@ from forex_app.engine import TradingEngine
 from forex_app.instruments import instrument_meta
 from forex_app.market import SyntheticFeed
 from mobile.crypto_feed import MobileLiveMarketFeed
+from mobile.ig_prices import CONTRACTS, REPLACEMENTS, ENV
 from mobile.paper_persistence import PaperCheckpoint, PreservingMobileDatabase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +168,9 @@ class MobileTradingEngine(TradingEngine):
         # This mobile installation remains PAPER ONLY. Never allow synthetic
         # prices, unverified futures delay, a closed weekend or an unrelated
         # fresh crypto candle to authorize an FX/metal/energy position.
+        if s.symbol in self.cfg.get("mobile_close_only", ()):
+            self.last_open_block_reason = "Legacy PAPER instrument is close-only."
+            return
         asset = instrument_meta(s.symbol).get("asset_class")
         if self.entry_asset_scope not in ("CRYPTO_ONLY", "MULTI_MARKET"):
             self.last_open_block_reason = "PAPER feed not ready: no verified LIVE market."
@@ -280,7 +284,7 @@ class MobileRuntime:
         if self.cfg.get("selected_chart_symbol") not in self.cfg["symbols"]:
             self.cfg["selected_chart_symbol"] = "BTCUSD"
         logging.warning(
-            "FRESH_MULTIMARKET_PAPER no IG, symbols=%s, "
+            "FRESH_MULTIMARKET_PAPER no broker orders, base symbols=%s, "
             "selection=AUTO TOP 10, risk_per_trade_pct=%.2f, broker=synthetic",
             ",".join(self.cfg["symbols"]), self.cfg["risk_per_trade_pct"],
         )
@@ -295,6 +299,18 @@ class MobileRuntime:
             # TradingEngine's legacy constructor clears open_positions on
             # every launch. Preserve the mobile ledger during boot instead.
             self.db._preserve_positions_during_boot = True
+        if feed is None and self.cfg.get("market_data_mode", "LIVE").upper() == "LIVE":
+            # A position opened on a different feed retains its original instrument.
+            held = {row["symbol"] for row in self.db.load_positions()}
+            if all(os.getenv(k, "").strip() for k in ENV) or held.intersection(CONTRACTS):
+                symbols = self.cfg["symbols"]
+                self.cfg["symbols"] = [REPLACEMENTS.get(sym, sym) for sym in symbols]
+                legacy = [sym for sym in REPLACEMENTS if sym in held]
+                self.cfg["symbols"].extend(legacy)
+                self.cfg["mobile_close_only"] = legacy
+                chart = self.cfg.get("selected_chart_symbol")
+                if chart in REPLACEMENTS and chart not in held:
+                    self.cfg["selected_chart_symbol"] = REPLACEMENTS[chart]
         self.feed = feed or (MobileLiveMarketFeed(self.cfg["symbols"], self.cfg)
                              if str(self.cfg.get("market_data_mode", "LIVE")).upper() == "LIVE"
                              else SyntheticFeed(self.cfg["symbols"]))
@@ -328,7 +344,7 @@ class MobileRuntime:
                                           encoding="utf-8")
                         logging.warning(
                             "FRESH_MULTIMARKET_PAPER_AUTO_START_QUEUED "
-                            "awaiting verified LIVE market data; no IG"
+                            "awaiting verified LIVE market data; no broker orders"
                         )
                 except Exception as exc:
                     self.auto_resume_pending = False
@@ -501,7 +517,7 @@ class MobileRuntime:
             "readiness_reason": readiness.get("reason",""),
             "fresh_crypto": int(readiness.get("fresh_crypto",0)),
             "fresh_non_crypto": int(readiness.get("fresh_non_crypto",0)),
-            "paper_strategy_profile": "FRESH MULTI-MARKET · NO IG",
+            "paper_strategy_profile": "FRESH MULTI-MARKET · NO BROKER ORDERS",
             "new_paper_ledger": True,
             "decision_cycles": int(e.decision_cycle_count),
             "selection": {key:int(e.selector.stats.get(key,0))
@@ -732,7 +748,7 @@ class MobileRuntime:
                                   "error": self.persistence_error},
                 "trading_readiness": self.trading_readiness(),
                 "staged_paper_test": self.staged_paper_test,
-                "paper_strategy_profile": "FRESH MULTI-MARKET PAPER · NO IG",
+                "paper_strategy_profile": "FRESH MULTI-MARKET PAPER · NO BROKER ORDERS",
                 "full_symbol_count": self.full_symbol_count,
                 "status": e.last_status, "started_at": self.started_at, "session_started_at": e.session_started_at,
                 "last_scan_at": self.last_scan_at, "last_scan_error": self.last_scan_error,

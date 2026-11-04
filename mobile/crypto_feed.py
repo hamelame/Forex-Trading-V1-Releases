@@ -8,6 +8,7 @@ prices, and it is enabled only on the mobile service.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 import time
 import urllib.parse
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 
 from forex_app.instruments import instrument_meta
 from forex_app.live_market import LiveMarketFeed
+from mobile.ig_prices import CONTRACTS, DemoPrices
 
 # Mobile-only allowlist. This is intentionally not the 32-coin PC universe:
 # bounded requests keep the Render 512-MB worker responsive.
@@ -83,6 +85,23 @@ def _validated_ohlc(rows, provider, *, source_order):
 class MobileLiveMarketFeed(LiveMarketFeed):
     """Retain original FX/metals/indices logic; mobile liquid-crypto feed only."""
 
+    def __init__(self, symbols, cfg=None):
+        super().__init__(symbols, cfg)
+        self.ig_prices = DemoPrices()
+
+    def snapshot(self, symbol):
+        if symbol not in CONTRACTS:
+            return super().snapshot(symbol)
+        q = self.ig_prices.quotes.get(symbol)
+        if not q or not 0 <= time.time() - q[0] <= 180:
+            raise RuntimeError(self._last_error.get(symbol, "Awaiting fresh IG demo quote"))
+        snap = super().snapshot(symbol)
+        if datetime.fromisoformat(snap.timestamp).timestamp() + 60 > time.time():
+            raise RuntimeError("Waiting for closed IG minute bar")
+        return replace(snap, bid=q[1], ask=q[2],
+                       spread_pips=(q[2]-q[1])/instrument_meta(symbol)["tick_size"],
+                       data_age_seconds=time.time()-q[0])
+
     def _fetch_kraken(self, symbol):
         pair = _KRAKEN_PAIRS.get(symbol)
         if not pair:
@@ -121,6 +140,10 @@ class MobileLiveMarketFeed(LiveMarketFeed):
         return _validated_ohlc(response, "COINBASE PUBLIC 1M", source_order="coinbase")
 
     def _refresh_symbol(self, symbol, force=False):
+        if symbol in CONTRACTS:
+            self._last_fetch[symbol] = time.time()
+            self.ig_prices.refresh(self, symbol)
+            return
         if symbol not in _KRAKEN_PAIRS:
             return super()._refresh_symbol(symbol, force=force)
         now = time.time()
