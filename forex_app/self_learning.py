@@ -1071,12 +1071,29 @@ class SelfLearningEngine:
         # Long/short asymmetry is learned from actual PAPER outcomes instead of
         # assuming BUY and SELL have identical edge. A persistently bad side gets
         # lower risk or research-only treatment at the asset-class level.
+        paper_side_probe=False
         if side_stats and side_stats["samples"]>=int(self.cfg.get("governor_side_min_samples",20)):
             se=float(side_stats["expectancy_r"]); spf=float(side_stats["pf"])
             reasons.append(f"{asset}/{side} n={side_stats['samples']} E={se:+.2f}R PF={spf:.2f}")
             if (se<=float(self.cfg.get("governor_side_block_expectancy_r",-0.12))
                     and spf<=float(self.cfg.get("governor_side_block_pf",0.82))):
-                state="RESEARCH-ONLY"; allow=False; risk=0.0
+                # A small mobile PAPER batch may collect ten additional outcomes
+                # before a broad side veto becomes final. Specific context,
+                # regime, symbol and fast-evidence vetoes retain authority.
+                paper_side_probe=(
+                    self.cfg.get("mobile_paper_side_probe_enabled",False) is True
+                    and self.cfg.get("paper_only_build") is True
+                    and self.cfg.get("mode")=="PAPER"
+                    and self.cfg.get("broker")=="synthetic"
+                    and asset=="CRYPTO"
+                    and 20<=int(side_stats["samples"])<30
+                    and se>-0.30 and spf>0.50
+                )
+                if paper_side_probe and allow:
+                    state="PAPER-PROBE"; risk=min(risk,0.10)
+                    reasons.append("bounded PAPER side probe: sample limit 30, risk cap 0.01%")
+                else:
+                    state="RESEARCH-ONLY"; allow=False; risk=0.0
             elif se<0 or spf<.95:
                 risk=min(risk,float(self.cfg.get("governor_side_negative_risk_mult",0.25)))
 
@@ -1101,6 +1118,7 @@ class SelfLearningEngine:
         return {
             "state":state,"risk_mult":max(0.0,min(1.0,risk)),"allow":allow,
             "reason":" · ".join(reasons) if reasons else "collecting evidence",
+            "paper_side_probe":bool(paper_side_probe and allow),
         }
 
     def execution_edge_score(self,symbol,regime,side,session):

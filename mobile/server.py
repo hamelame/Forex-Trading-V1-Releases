@@ -164,6 +164,17 @@ class MobileTradingEngine(TradingEngine):
             "engine_status": str(self.last_status)[:220],
         }
 
+    def _equity_sizing_plan(self, d, s, rg, effective_confidence,
+                           context_health, runtime_guard, directional_health=None):
+        plan=super()._equity_sizing_plan(
+            d,s,rg,effective_confidence,context_health,runtime_guard,directional_health)
+        gov=self.learning.expectancy_governor(s.symbol,rg,d.action,s.session)
+        if gov.get("paper_side_probe"):
+            # Apply after all evidence floors; risk.size also enforces this cap.
+            plan.update(state="PAPER-PROBE",floor_pct=0.0,
+                        cap_pct=min(float(plan["cap_pct"]),0.01))
+        return plan
+
     def _open(self, d, s):
         # This mobile installation remains PAPER ONLY. Never allow synthetic
         # prices, unverified futures delay, a closed weekend or an unrelated
@@ -196,6 +207,14 @@ class MobileTradingEngine(TradingEngine):
                     or live_age > max_age):
                 self.last_open_block_reason = "NONCRYPTO_STALE_OR_DELAYED_PUBLIC_FEED"
                 return
+        gov=self.learning.expectancy_governor(
+            s.symbol,self.regimes.get(s.symbol,"MIXED"),d.action,s.session)
+        if gov.get("paper_side_probe") and any(
+                instrument_meta(p.symbol).get("asset_class")=="CRYPTO"
+                for p in self.positions):
+            self.last_open_block_reason="PAPER_SIDE_PROBE_WAIT: one crypto position at a time"
+            self.last_status=self.last_open_block_reason
+            return
         return super()._open(d, s)
 
 
@@ -252,6 +271,7 @@ class MobileRuntime:
             context_crypto_24_7=True,
             context_forex_new_york_enabled=True,
             high_vol_require_positive_edge=False,
+            mobile_paper_side_probe_enabled=True,
             high_vol_min_signal_score=74,
             high_vol_min_confidence=68,
             forex_probation_enabled=True,
@@ -272,6 +292,9 @@ class MobileRuntime:
             float(self.cfg.get("max_total_risk_pct", 1.6)), 0.50)
         self.cfg["max_open_positions"] = min(
             int(self.cfg.get("max_open_positions", 5)), 3)
+        self.cfg["learning_side_window"] = max(30,int(self.cfg.get("learning_side_window",50)))
+        logging.warning("PAPER_SIDE_PROBE enabled: crypto side samples 20-29 only, "
+                        "one crypto position, planned risk cap 0.01%%, specific vetoes preserved")
         if self.cfg.get("adaptive_rsi_shadow_only", False):
             # The original config simultaneously set Shadow-only=True AND
             # adaptive_rsi_execution_gate_enabled=True. A research-only RSI
